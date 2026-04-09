@@ -1,0 +1,10 @@
+{
+  "id": "assistant-guardrails",
+  "name": "Assistant Guardrails",
+  "description": "Prompt preload and hard-deny guardrails for assistant runtime",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
