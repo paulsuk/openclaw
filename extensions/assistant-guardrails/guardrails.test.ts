@@ -185,12 +185,13 @@ describe("assistant guardrail policy", () => {
   });
 
   describe("buildWritePolicyReminder", () => {
-    it("always returns a prependContext with write policy guidance", () => {
+    it("returns a compact prependContext with write policy guidance", () => {
       const result = buildWritePolicyReminder();
-      expect(result.prependContext).toContain("write policy");
       expect(result.prependContext).toContain("gdrive_sync");
       expect(result.prependContext).toContain("exchange");
       expect(result.prependContext).toContain("git");
+      // Compact: single line, well under 200 chars
+      expect(result.prependContext.length).toBeLessThan(200);
     });
   });
 

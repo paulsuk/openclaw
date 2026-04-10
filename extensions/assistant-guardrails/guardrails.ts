@@ -269,14 +269,9 @@ function extractWritePath(event: PluginHookBeforeToolCallEvent): string | null {
   return null;
 }
 
-const WRITE_POLICY_REMINDER = `\
-[assistant-guardrails: write policy]
-File and directory writes are only permitted in approved locations:
-- Workspace (your private container workspace, including gdrive_sync/ and exchange/)
-- Any git-tracked repository
-- System temp (/tmp, /var/tmp)
-
-Writes outside these locations will be blocked. Use exchange/ for handoff artifacts or gdrive_sync/ for persistent outputs.`.trim();
+// Kept intentionally compact — this is injected on every LLM call.
+const WRITE_POLICY_REMINDER =
+  "[policy] File writes allowed in: workspace/**, git repos, /tmp only. Blocked elsewhere — use exchange/ or gdrive_sync/.";
 
 export function buildWritePolicyReminder(): { prependContext: string } {
   return { prependContext: WRITE_POLICY_REMINDER };
