@@ -7,6 +7,7 @@ const {
   buildFileWriteGuardrail,
   buildServicePreload,
   buildToolDeny,
+  buildWritePolicyReminder,
   cacheWorkspaceDir,
   isApprovedWritePath,
   isUnderGitRepo,
@@ -180,6 +181,16 @@ describe("assistant guardrail policy", () => {
         },
       });
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe("buildWritePolicyReminder", () => {
+    it("always returns a prependContext with write policy guidance", () => {
+      const result = buildWritePolicyReminder();
+      expect(result.prependContext).toContain("write policy");
+      expect(result.prependContext).toContain("gdrive_sync");
+      expect(result.prependContext).toContain("exchange");
+      expect(result.prependContext).toContain("git");
     });
   });
 

@@ -3,6 +3,7 @@ import {
   buildFileWriteGuardrail,
   buildServicePreload,
   buildToolDeny,
+  buildWritePolicyReminder,
   cacheWorkspaceDir,
 } from "./guardrails.js";
 
@@ -13,7 +14,14 @@ export default definePluginEntry({
   register(api: OpenClawPluginApi) {
     api.on("before_prompt_build", (event, ctx) => {
       cacheWorkspaceDir(ctx);
-      return buildServicePreload({ event, ctx });
+      const policyReminder = buildWritePolicyReminder();
+      const servicePreload = buildServicePreload({ event, ctx });
+      if (servicePreload) {
+        return {
+          prependContext: `${policyReminder.prependContext}\n\n${servicePreload.prependContext}`,
+        };
+      }
+      return policyReminder;
     });
     api.on("before_tool_call", (event, ctx) => {
       return buildToolDeny({ event, ctx }) ?? buildFileWriteGuardrail({ event, ctx });

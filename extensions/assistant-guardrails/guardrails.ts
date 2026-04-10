@@ -269,6 +269,19 @@ function extractWritePath(event: PluginHookBeforeToolCallEvent): string | null {
   return null;
 }
 
+const WRITE_POLICY_REMINDER = `\
+[assistant-guardrails: write policy]
+File and directory writes are only permitted in approved locations:
+- Workspace (your private container workspace, including gdrive_sync/ and exchange/)
+- Any git-tracked repository
+- System temp (/tmp, /var/tmp)
+
+Writes outside these locations will be blocked. Use exchange/ for handoff artifacts or gdrive_sync/ for persistent outputs.`.trim();
+
+export function buildWritePolicyReminder(): { prependContext: string } {
+  return { prependContext: WRITE_POLICY_REMINDER };
+}
+
 export function buildFileWriteGuardrail(params: {
   event: PluginHookBeforeToolCallEvent;
   ctx?: PluginHookToolContext;
