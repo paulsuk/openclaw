@@ -16,24 +16,22 @@ const log = {
   },
 };
 
-const TRUSTED_BASE = path.resolve(
-  "C:\\Users\\sukpa\\Documents\\projects\\gdrive_sync\\projects\\_assistant",
-);
+const TRUSTED_BASE_SEGMENTS = ["gdrive_sync", "projects", "_assistant"] as const;
 
-const SERVICES_DOC = path.join(TRUSTED_BASE, "docs", "services.md");
+const SERVICES_DOC_SEGMENTS = ["docs", "services.md"] as const;
 
-const SERVICE_DOCS = {
-  calendar: path.join(TRUSTED_BASE, "services", "google-calendar.md"),
-  todoist: path.join(TRUSTED_BASE, "services", "todoist.md"),
-  gmail: path.join(TRUSTED_BASE, "services", "gmail.md"),
-  notion: path.join(TRUSTED_BASE, "services", "notion.md"),
-  "google-docs": path.join(TRUSTED_BASE, "services", "google-docs.md"),
-  "web-research": path.join(TRUSTED_BASE, "services", "web-research.md"),
+const SERVICE_DOC_SEGMENTS = {
+  calendar: ["services", "google-calendar.md"],
+  todoist: ["services", "todoist.md"],
+  gmail: ["services", "gmail.md"],
+  notion: ["services", "notion.md"],
+  "google-docs": ["services", "google-docs.md"],
+  "web-research": ["services", "web-research.md"],
 } as const;
 
 const MAX_PRELOAD_BYTES = 24 * 1024;
 
-type ServiceId = keyof typeof SERVICE_DOCS;
+type ServiceId = keyof typeof SERVICE_DOC_SEGMENTS;
 
 const SERVICE_MATCHERS: Array<{ service: ServiceId; patterns: RegExp[] }> = [
   { service: "calendar", patterns: [/(^|\b)(calendar|event|freebusy|schedule)(\b|$)/i] },
@@ -78,11 +76,27 @@ export function matchServiceFromPrompt(text: string): ServiceId | null {
   return hits[0]?.service ?? null;
 }
 
-export function readTrustedDoc(filePath: string): string | null {
+export function resolveTrustedBase(ctx?: PluginHookAgentContext): string {
+  const workspaceDir = ctx?.workspaceDir?.trim();
+  return workspaceDir
+    ? path.resolve(workspaceDir, ...TRUSTED_BASE_SEGMENTS)
+    : path.resolve(...TRUSTED_BASE_SEGMENTS);
+}
+
+export function resolveTrustedDocPath(
+  relativeSegments: readonly string[],
+  ctx?: PluginHookAgentContext,
+): string {
+  return path.join(resolveTrustedBase(ctx), ...relativeSegments);
+}
+
+export function readTrustedDoc(filePath: string, ctx?: PluginHookAgentContext): string | null {
+  const trustedBase = resolveTrustedBase(ctx);
   const resolved = path.resolve(filePath);
-  if (!resolved.startsWith(TRUSTED_BASE)) {
+  const relative = path.relative(trustedBase, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
     log.warn(
-      `[assistant-guardrails] preload skip ${JSON.stringify({ reason: "untrusted_path", path: resolved })}`,
+      `[assistant-guardrails] preload skip ${JSON.stringify({ reason: "untrusted_path", path: resolved, trusted_base: trustedBase })}`,
     );
     return null;
   }
@@ -122,9 +136,10 @@ export function buildServicePreload(params: {
     return undefined;
   }
 
-  const serviceDocPath = SERVICE_DOCS[matchedService];
-  const servicesDoc = readTrustedDoc(SERVICES_DOC);
-  const serviceDoc = readTrustedDoc(serviceDocPath);
+  const servicesDocPath = resolveTrustedDocPath(SERVICES_DOC_SEGMENTS, params.ctx);
+  const serviceDocPath = resolveTrustedDocPath(SERVICE_DOC_SEGMENTS[matchedService], params.ctx);
+  const servicesDoc = readTrustedDoc(servicesDocPath, params.ctx);
+  const serviceDoc = readTrustedDoc(serviceDocPath, params.ctx);
   if (!servicesDoc || !serviceDoc) {
     log.warn(
       `[assistant-guardrails] preload ${JSON.stringify({ hook: "before_prompt_build", action: "preload_service_docs", matched_service: matchedService, skipped: true, skip_reason: "preload_read_failed" })}`,
@@ -133,7 +148,7 @@ export function buildServicePreload(params: {
   }
 
   log.debug(
-    `[assistant-guardrails] preload ${JSON.stringify({ hook: "before_prompt_build", action: "preload_service_docs", matched_service: matchedService, injected_paths: [SERVICES_DOC, serviceDocPath], skipped: false })}`,
+    `[assistant-guardrails] preload ${JSON.stringify({ hook: "before_prompt_build", action: "preload_service_docs", matched_service: matchedService, injected_paths: [servicesDocPath, serviceDocPath], skipped: false })}`,
   );
 
   return {
