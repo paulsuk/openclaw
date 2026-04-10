@@ -260,13 +260,95 @@ export function isApprovedWritePath(filePath: string): boolean {
   return false;
 }
 
-function extractWritePath(event: PluginHookBeforeToolCallEvent): string | null {
+// ---------------------------------------------------------------------------
+// Bash command write-path extraction
+// ---------------------------------------------------------------------------
+// We fail open: if we can't reliably determine a path, we allow the command
+// through rather than risk blocking legitimate work. Only unambiguous patterns
+// with literal paths are checked.
+
+// Matches an unquoted or quoted file path token.
+// Handles: /abs/path, relative/path, ~/path, ./path
+const PATH_TOKEN = /(?:"([^"]+)"|'([^']+)'|(\S+))/g;
+
+function extractTokens(s: string): string[] {
+  const tokens: string[] = [];
+  let m: RegExpExecArray | null;
+  PATH_TOKEN.lastIndex = 0;
+  while ((m = PATH_TOKEN.exec(s)) !== null) {
+    tokens.push(m[1] ?? m[2] ?? m[3] ?? "");
+  }
+  return tokens;
+}
+
+function looksLikePath(token: string): boolean {
+  // Must start with /, ~, ./, ../, or contain a /
+  return /^[/~.]/.test(token) || token.includes("/");
+}
+
+/**
+ * Extract candidate destination paths from a Bash command string.
+ * Covers: touch, mkdir, tee, output redirects (>, >>), cp/mv destination.
+ * Returns an empty array if the command is not recognizable.
+ */
+export function extractBashWritePaths(command: string): string[] {
+  const paths: string[] = [];
+  const trimmed = command.trim();
+
+  // Output redirects: anything after > or >> that looks like a path
+  // e.g. "echo foo > /tmp/out.txt", "cat file >> /path/log"
+  const redirectMatches = trimmed.matchAll(/>>?\s+([^\s|&;]+)/g);
+  for (const m of redirectMatches) {
+    const p = m[1];
+    if (p && looksLikePath(p)) paths.push(p);
+  }
+
+  // touch, mkdir — first non-flag argument is the path (must be at command start)
+  const simpleCreate = /^\s*(touch|mkdir(?:\s+-[pPm]\S*)*)\s+(.+)/;
+  const scMatch = simpleCreate.exec(trimmed);
+  if (scMatch) {
+    const rest = scMatch[2] ?? "";
+    for (const tok of extractTokens(rest)) {
+      if (!tok.startsWith("-") && looksLikePath(tok)) {
+        paths.push(tok);
+        break;
+      }
+    }
+  }
+
+  // tee — can appear anywhere in a pipeline
+  const teePattern = /(?:^|\|)\s*tee(?:\s+-a)?\s+([^\s|&;]+)/g;
+  for (const m of trimmed.matchAll(teePattern)) {
+    const p = m[1];
+    if (p && looksLikePath(p)) paths.push(p);
+  }
+
+  // cp/mv: destination is the last argument
+  const copyMove = /^\s*(cp|mv)(?:\s+-\S+)*\s+(.+)/;
+  const cmMatch = copyMove.exec(trimmed);
+  if (cmMatch) {
+    const args = extractTokens(cmMatch[2] ?? "").filter((t) => !t.startsWith("-"));
+    if (args.length >= 2) {
+      // destination is the last token
+      const dest = args[args.length - 1];
+      if (dest && looksLikePath(dest)) paths.push(dest);
+    }
+  }
+
+  return paths;
+}
+
+function extractWritePath(event: PluginHookBeforeToolCallEvent): string[] {
   const name = event.toolName.toLowerCase();
   if (name === "write" || name === "edit" || name === "multiedit") {
     const filePath = event.params.file_path;
-    return typeof filePath === "string" ? filePath : null;
+    return typeof filePath === "string" ? [filePath] : [];
   }
-  return null;
+  if (name === "bash") {
+    const command = event.params.command;
+    return typeof command === "string" ? extractBashWritePaths(command) : [];
+  }
+  return [];
 }
 
 // Kept intentionally compact — this is injected on every LLM call.
@@ -281,12 +363,13 @@ export function buildFileWriteGuardrail(params: {
   event: PluginHookBeforeToolCallEvent;
   ctx?: PluginHookToolContext;
 }): { block: true; blockReason: string } | undefined {
-  const filePath = extractWritePath(params.event);
-  if (!filePath) return undefined;
+  const paths = extractWritePath(params.event);
+  if (paths.length === 0) return undefined;
 
-  if (isApprovedWritePath(filePath)) return undefined;
+  const denied = paths.filter((p) => !isApprovedWritePath(p));
+  if (denied.length === 0) return undefined;
 
-  const reason = `File write to '${filePath}' is outside approved locations (gdrive_sync, exchange, or a git repo). Move work to a tracked location.`;
+  const reason = `File write to '${denied[0]}' is outside approved locations (workspace, git repos, /tmp). Move work to a tracked location.`;
 
   log.warn(
     `[assistant-guardrails] deny ${JSON.stringify({
@@ -294,7 +377,7 @@ export function buildFileWriteGuardrail(params: {
       action: "deny_file_write",
       tool_name: params.event.toolName,
       matched_rule: "file-write-location-deny",
-      file_path: filePath,
+      denied_paths: denied,
       deny_reason: reason,
     })}`,
   );

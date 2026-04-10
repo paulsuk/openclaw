@@ -9,6 +9,7 @@ const {
   buildToolDeny,
   buildWritePolicyReminder,
   cacheWorkspaceDir,
+  extractBashWritePaths,
   isApprovedWritePath,
   isUnderGitRepo,
   matchServiceFromPrompt,
@@ -379,11 +380,81 @@ describe("assistant guardrail policy", () => {
       expect(result).toBeUndefined();
     });
 
-    it("returns undefined for Bash tool calls (not intercepted)", () => {
+    it("allows a Bash command writing to /tmp (temp path)", () => {
       const result = buildFileWriteGuardrail({
         event: { toolName: "Bash", params: { command: "echo hello > /tmp/x.txt" } },
       });
       expect(result).toBeUndefined();
+    });
+
+    it("blocks a Bash touch command writing outside approved locations", () => {
+      cacheWorkspaceDir({ workspaceDir: "/workspace/shared" });
+      vi.spyOn(fs, "statSync").mockImplementation(() => ({ isDirectory: () => false } as fs.Stats));
+      vi.spyOn(fs, "existsSync").mockReturnValue(false);
+
+      const result = buildFileWriteGuardrail({
+        event: { toolName: "Bash", params: { command: "touch /home/user/newfile.txt" } },
+      });
+      expect(result).toEqual({
+        block: true,
+        blockReason: expect.stringContaining("outside approved locations"),
+      });
+    });
+
+    it("returns undefined for Bash commands with no detectable file write", () => {
+      const result = buildFileWriteGuardrail({
+        event: { toolName: "Bash", params: { command: "ls -la /workspace/shared" } },
+      });
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe("extractBashWritePaths", () => {
+    it("extracts redirect target", () => {
+      expect(extractBashWritePaths("echo hello > /tmp/out.txt")).toEqual(["/tmp/out.txt"]);
+    });
+
+    it("extracts append redirect target", () => {
+      expect(extractBashWritePaths("cat file.txt >> /workspace/shared/log.txt")).toEqual([
+        "/workspace/shared/log.txt",
+      ]);
+    });
+
+    it("extracts touch argument", () => {
+      expect(extractBashWritePaths("touch /home/user/newfile")).toEqual(["/home/user/newfile"]);
+    });
+
+    it("extracts mkdir -p argument", () => {
+      expect(extractBashWritePaths("mkdir -p /workspace/shared/newdir")).toEqual([
+        "/workspace/shared/newdir",
+      ]);
+    });
+
+    it("extracts tee argument", () => {
+      expect(extractBashWritePaths("echo data | tee /tmp/out.txt")).toEqual(["/tmp/out.txt"]);
+    });
+
+    it("extracts cp destination (last arg)", () => {
+      expect(extractBashWritePaths("cp src.txt /home/user/dest.txt")).toEqual([
+        "/home/user/dest.txt",
+      ]);
+    });
+
+    it("extracts mv destination (last arg)", () => {
+      expect(extractBashWritePaths("mv old.txt /workspace/shared/new.txt")).toEqual([
+        "/workspace/shared/new.txt",
+      ]);
+    });
+
+    it("returns empty array for read-only commands", () => {
+      expect(extractBashWritePaths("ls -la /workspace/shared")).toEqual([]);
+      expect(extractBashWritePaths("cat /etc/hosts")).toEqual([]);
+      expect(extractBashWritePaths("grep foo bar.txt")).toEqual([]);
+    });
+
+    it("returns empty array for cp with only one arg (ambiguous)", () => {
+      // cp with a single arg — can't determine destination
+      expect(extractBashWritePaths("cp src.txt")).toEqual([]);
     });
   });
 });
