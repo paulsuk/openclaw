@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type {
   PluginHookAgentContext,
@@ -157,6 +158,140 @@ export function buildServicePreload(params: {
       `[assistant-guardrails preload: ${matchedService}]\n${serviceDoc}`,
     ].join("\n\n"),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Workspace dir cache
+// PluginHookToolContext does not carry workspaceDir; we capture it from
+// before_prompt_build (which always fires before any tool calls in a session).
+// ---------------------------------------------------------------------------
+
+let _cachedWorkspaceDir: string | undefined;
+
+export function cacheWorkspaceDir(ctx?: PluginHookAgentContext): void {
+  const dir = ctx?.workspaceDir?.trim();
+  if (dir) {
+    _cachedWorkspaceDir = dir;
+  }
+}
+
+/** Reset the workspace cache. Only for use in tests. */
+export function _resetWorkspaceDirCache(): void {
+  _cachedWorkspaceDir = undefined;
+}
+
+// ---------------------------------------------------------------------------
+// File-write location guardrail
+// ---------------------------------------------------------------------------
+
+const SYSTEM_TEMP_ROOTS: readonly string[] = [
+  ...new Set([os.tmpdir(), "/tmp", "/var/tmp"].map((p) => path.resolve(p))),
+];
+
+function isTempPath(resolvedPath: string): boolean {
+  return SYSTEM_TEMP_ROOTS.some(
+    (tmp) => resolvedPath === tmp || resolvedPath.startsWith(tmp + path.sep),
+  );
+}
+
+// Cache git-root lookups: maps a directory path → whether it is inside a git repo.
+// Avoids re-walking the FS when the agent writes multiple files to the same repo.
+const gitRootCache = new Map<string, boolean>();
+
+export function isUnderGitRepo(filePath: string): boolean {
+  let dir: string;
+  try {
+    const stat = fs.statSync(filePath);
+    dir = stat.isDirectory() ? filePath : path.dirname(filePath);
+  } catch {
+    // File doesn't exist yet (being created) — check parent
+    dir = path.dirname(path.resolve(filePath));
+  }
+
+  if (gitRootCache.has(dir)) {
+    return gitRootCache.get(dir)!;
+  }
+
+  const visited: string[] = [];
+  let prev = "";
+  let found = false;
+
+  while (dir !== prev) {
+    if (gitRootCache.has(dir)) {
+      found = gitRootCache.get(dir)!;
+      break;
+    }
+    visited.push(dir);
+    try {
+      if (fs.existsSync(path.join(dir, ".git"))) {
+        found = true;
+        break;
+      }
+    } catch {
+      // ignore FS errors during walk
+    }
+    prev = dir;
+    dir = path.dirname(dir);
+  }
+
+  // Populate cache for every directory we visited
+  for (const visitedDir of visited) {
+    gitRootCache.set(visitedDir, found);
+  }
+
+  return found;
+}
+
+export function isApprovedWritePath(filePath: string): boolean {
+  const resolved = path.resolve(filePath);
+
+  if (isTempPath(resolved)) return true;
+
+  // Allow anywhere within the workspace (DUM-E's private space, includes gdrive_sync and exchange)
+  const workspace = _cachedWorkspaceDir;
+  if (workspace) {
+    const ws = path.resolve(workspace);
+    if (resolved === ws || resolved.startsWith(ws + path.sep)) return true;
+  }
+
+  // Allow git repos (version-controlled work, including repos outside the workspace)
+  if (isUnderGitRepo(resolved)) return true;
+
+  return false;
+}
+
+function extractWritePath(event: PluginHookBeforeToolCallEvent): string | null {
+  const name = event.toolName.toLowerCase();
+  if (name === "write" || name === "edit" || name === "multiedit") {
+    const filePath = event.params.file_path;
+    return typeof filePath === "string" ? filePath : null;
+  }
+  return null;
+}
+
+export function buildFileWriteGuardrail(params: {
+  event: PluginHookBeforeToolCallEvent;
+  ctx?: PluginHookToolContext;
+}): { block: true; blockReason: string } | undefined {
+  const filePath = extractWritePath(params.event);
+  if (!filePath) return undefined;
+
+  if (isApprovedWritePath(filePath)) return undefined;
+
+  const reason = `File write to '${filePath}' is outside approved locations (gdrive_sync, exchange, or a git repo). Move work to a tracked location.`;
+
+  log.warn(
+    `[assistant-guardrails] deny ${JSON.stringify({
+      hook: "before_tool_call",
+      action: "deny_file_write",
+      tool_name: params.event.toolName,
+      matched_rule: "file-write-location-deny",
+      file_path: filePath,
+      deny_reason: reason,
+    })}`,
+  );
+
+  return { block: true, blockReason: reason };
 }
 
 function isGmailSend(event: PluginHookBeforeToolCallEvent): boolean {
