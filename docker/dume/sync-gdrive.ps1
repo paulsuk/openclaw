@@ -5,7 +5,7 @@ $localPath = "C:\Users\sukpa\Documents\projects\gdrive_sync"
 $remotePath = "gdrive:projects_sync"
 $logDir = "C:\Users\sukpa\Documents\projects\.openclaw-docker\logs"
 $logFile = Join-Path $logDir "rclone-sync.log"
-$lockFile = Join-Path $logDir "rclone-sync.lock"
+$intervalSeconds = 30
 
 if (-not (Test-Path $rcloneExe)) {
   $rcloneCommand = Get-Command rclone -ErrorAction SilentlyContinue
@@ -20,25 +20,13 @@ if (-not (Test-Path $logDir)) {
   New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 }
 
-$lockHandle = $null
-
-try {
+while ($true) {
   try {
-    $lockHandle = [System.IO.File]::Open($lockFile, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    Add-Content -Path $logFile -Value "$(Get-Date -Format o) starting sync $localPath -> $remotePath"
+    & $rcloneExe sync $localPath $remotePath --create-empty-src-dirs --transfers 4 --checkers 8
+    Add-Content -Path $logFile -Value "$(Get-Date -Format o) sync completed"
   } catch {
-    Add-Content -Path $logFile -Value "$(Get-Date -Format o) skip overlapping sync run"
-    exit 0
+    Add-Content -Path $logFile -Value "$(Get-Date -Format o) sync failed: $($_.Exception.Message)"
   }
-
-  Add-Content -Path $logFile -Value "$(Get-Date -Format o) starting sync $localPath -> $remotePath"
-  & $rcloneExe sync $localPath $remotePath --create-empty-src-dirs --transfers 4 --checkers 8
-  Add-Content -Path $logFile -Value "$(Get-Date -Format o) sync completed"
-} catch {
-  Add-Content -Path $logFile -Value "$(Get-Date -Format o) sync failed: $($_.Exception.Message)"
-  throw
-} finally {
-  if ($lockHandle) {
-    $lockHandle.Dispose()
-    Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
-  }
+  Start-Sleep -Seconds $intervalSeconds
 }
