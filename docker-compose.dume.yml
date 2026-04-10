@@ -8,7 +8,11 @@ services:
       TZ: ${OPENCLAW_TZ}
     volumes:
       - ${OPENCLAW_STATE_DIR}:/home/node/.openclaw
-      - ${OPENCLAW_PROJECTS_DIR}:/workspace/projects
+      - ${OPENCLAW_STATE_DIR}/workspace:/workspace/shared
+      - ${OPENCLAW_SHARED_GDRIVE_DIR}:/workspace/shared/gdrive_sync
+      - ${OPENCLAW_SHARED_EXCHANGE_DIR}:/workspace/shared/exchange
+      - dume_managed_repos:/workspace/repos
+      - ${OPENCLAW_SSH_DIR}:/ssh-host:ro
     ports:
       - "${OPENCLAW_GATEWAY_PORT}:18789"
       - "${OPENCLAW_BRIDGE_PORT}:18790"
@@ -16,14 +20,9 @@ services:
     restart: unless-stopped
     command:
       [
-        "node",
-        "dist/index.js",
-        "gateway",
-        "--allow-unconfigured",
-        "--bind",
-        "${OPENCLAW_GATEWAY_BIND}",
-        "--port",
-        "18789",
+        "/bin/sh",
+        "-lc",
+        "if [ -d /ssh-host ]; then install -d -m 700 /home/node/.ssh; cp /ssh-host/* /home/node/.ssh/ 2>/dev/null || true; ssh-keygen -F github.com -f /home/node/.ssh/known_hosts >/dev/null 2>&1 || ssh-keyscan -H github.com >> /home/node/.ssh/known_hosts 2>/dev/null || true; chmod 600 /home/node/.ssh/config /home/node/.ssh/id_ed25519_dume /home/node/.ssh/known_hosts 2>/dev/null || true; chmod 644 /home/node/.ssh/*.pub 2>/dev/null || true; fi; mkdir -p /workspace/repos /workspace/repos/fantasy-analytics; chown -R node:node /workspace/repos 2>/dev/null || true; git config --global user.name 'paulsuk'; git config --global user.email 'paulsuk@gatech.edu'; git config --global --get-all safe.directory | grep -Fx /workspace/repos/ResyBot >/dev/null 2>&1 || git config --global --add safe.directory /workspace/repos/ResyBot; git config --global --get-all safe.directory | grep -Fx /workspace/repos/fantasy-analytics/api >/dev/null 2>&1 || git config --global --add safe.directory /workspace/repos/fantasy-analytics/api; git config --global --get-all safe.directory | grep -Fx /workspace/repos/fantasy-analytics/web >/dev/null 2>&1 || git config --global --add safe.directory /workspace/repos/fantasy-analytics/web; exec node dist/index.js gateway --allow-unconfigured --bind ${OPENCLAW_GATEWAY_BIND} --port 18789",
       ]
     healthcheck:
       test:
@@ -37,3 +36,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+volumes:
+  dume_managed_repos:
+    name: dume_managed_repos
