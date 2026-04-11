@@ -87,9 +87,20 @@ jobs:
           if [ -n "$existing_pr" ]; then
             echo "Reusing existing PR #$existing_pr for upstream workflow changes."
           else
-            gh pr create \
+            set +e
+            pr_output="$(gh pr create \
               --base main \
               --head "${SYNC_BRANCH}" \
               --title "chore: review upstream workflow sync" \
-              --body "Scheduled upstream sync merged cleanly but included changes under .github/workflows. Review this PR before landing workflow updates on main."
+              --body "Scheduled upstream sync merged cleanly but included changes under .github/workflows. Review this PR before landing workflow updates on main." 2>&1)"
+            pr_status=$?
+            set -e
+            if [ $pr_status -eq 0 ]; then
+              echo "$pr_output"
+            elif echo "$pr_output" | grep -F "No commits between main and ${SYNC_BRANCH}" >/dev/null 2>&1; then
+              echo "Review branch has no commits ahead of main; skipping PR creation."
+            else
+              echo "$pr_output"
+              exit $pr_status
+            fi
           fi
