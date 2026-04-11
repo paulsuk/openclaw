@@ -1,0 +1,13 @@
+services:
+  dume-openclaw:
+    build:
+      context: .
+      dockerfile: docker/dume/Dockerfile
+      args:
+        OPENCLAW_BASE_IMAGE: ${OPENCLAW_IMAGE}
+    volumes:
+      - dume_managed_repos:/workspace/repos
+
+volumes:
+  dume_managed_repos:
+    name: dume_managed_repos
