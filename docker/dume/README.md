@@ -2,6 +2,17 @@
 
 This directory contains Paul's host-side control-plane files for the local DUM-E runtime.
 
+## Release Ritual
+
+When Paul wants local DUM-E to pick up new OpenClaw fork changes, use this sequence:
+
+1. Push the desired changes to Paul's fork.
+2. Publish or retag `ghcr.io/paulsuk/openclaw:live` so it points at the fork build DUM-E should run.
+3. Restart local DUM-E from `start-dume-docker.ps1`.
+4. Rebuild the local DUM-E overlay only if the overlay itself changed or if power-user managed-repo support needs a refreshed image.
+
+The important rule is that `ghcr.io/paulsuk/openclaw:live` is the normal release handoff surface for Paul's machine. The local overlay is a second layer on top of that base image, not the primary release vehicle.
+
 ## Runtime Modes
 
 ### Base runtime
@@ -13,6 +24,7 @@ This is the default shape for installs that do not need Linux-native coding repo
 - Shared writable workspace: `/workspace/shared`
 - No `/workspace/repos`
 - No managed-repo dependency hydration
+- Follows `ghcr.io/paulsuk/openclaw:live` directly after a normal restart
 
 Set:
 
@@ -33,6 +45,7 @@ This is Paul's current machine setup for coding inside DUM-E.
 - Managed repo volume: `dume_managed_repos`
 - Python repos use repo-local `.venv`
 - Node repos use repo-local `node_modules`
+- Still tracks the published `ghcr.io/paulsuk/openclaw:live` base first; the local overlay is only for optional power-user extras
 
 Set:
 
@@ -64,6 +77,36 @@ OPENCLAW_MANAGED_REPOS=/workspace/repos/ResyBot,/workspace/repos/fantasy-analyti
 - `sync-gdrive.ps1`
   - Host-side recurring `rclone` loop
 
+## Update Paths
+
+### Normal release uptake
+
+Use this when fork changes landed in the published `ghcr.io/paulsuk/openclaw:live` image and the local overlay files did not change.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\sukpa\Documents\projects\openclaw\docker\dume\start-dume-docker.ps1
+```
+
+This should pull or reuse the updated `ghcr.io/paulsuk/openclaw:live` base and restart DUM-E without rebuilding any local overlay layer.
+
+### Overlay rebuild required
+
+Rebuild the local overlay only when one of these is true:
+
+- files in `openclaw/docker/dume/` changed
+- the managed-repo compose override changed
+- the optional power-user repo tooling or dependency bootstrap changed
+
+In that case, keep `OPENCLAW_ENABLE_MANAGED_REPOS=1` and rerun the same startup wrapper. The script adds `--build` in managed-repo mode, so the local overlay image is rebuilt as part of the restart.
+
+### Managed repo hydration
+
+Managed repo hydration is optional power-user behavior, not part of the base release ritual.
+
+- Base runtime: no hydration step
+- Power-user runtime: hydration may run automatically at startup when enabled
+- Manual hydration is only needed if the managed repos exist and you want to refresh their dependency state explicitly
+
 ## Verification
 
 Host:
@@ -90,6 +133,12 @@ print('fa-api-python-ok')
 PY"
 & $docker exec dume-openclaw sh -lc "test -d /workspace/repos/fantasy-analytics/web/node_modules && echo fantasy-web-node-modules-ok"
 ```
+
+Release follow-through for power-user mode:
+
+1. publish or retag `ghcr.io/paulsuk/openclaw:live`
+2. rerun `start-dume-docker.ps1`
+3. run manual hydration only if auto-hydration is disabled or you need to force a dependency refresh
 
 Base-mode sanity:
 
