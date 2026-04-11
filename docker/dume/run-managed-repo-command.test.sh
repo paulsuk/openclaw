@@ -29,4 +29,14 @@ chmod +x "$REPO_DIR/show-env.sh"
 OUTPUT=$(OPENCLAW_MANAGED_REPO_SECRET_ROOT="$SECRET_ROOT" "$SCRIPT" ResyBot.env "$REPO_DIR" -- sh "$REPO_DIR/show-env.sh")
 test "$OUTPUT" = "test-api-key|test-auth-token|$REPO_DIR"
 
+cat >"$REPO_DIR/show-pwd.sh" <<'EOF'
+#!/bin/sh
+set -eu
+pwd
+EOF
+chmod +x "$REPO_DIR/show-pwd.sh"
+
+OUTPUT=$(OPENCLAW_MANAGED_REPO_SECRET_ROOT="$SECRET_ROOT" "$SCRIPT" none "$REPO_DIR" -- sh "$REPO_DIR/show-pwd.sh")
+test "$OUTPUT" = "$REPO_DIR"
+
 echo "run-managed-repo-command smoke test passed"

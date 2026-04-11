@@ -133,6 +133,7 @@ Rules:
 - do not keep repo secrets in repo trees
 - do not put repo secrets in `gdrive_sync`
 - DUM-E may edit these files if necessary, but that is not the recommended default
+- repos with no managed env can use `none` as the secret-file argument and still use the same wrapper surface
 
 Current canonical files:
 
@@ -144,6 +145,7 @@ Container execution pattern:
 
 ```sh
 /usr/local/bin/run-managed-repo-command.sh ResyBot.env /workspace/repos/ResyBot -- python3 -m cli.main plan ...
+/usr/local/bin/run-managed-repo-command.sh none /workspace/repos/ResyBot -- python3 -m cli.main --help
 ```
 
 That pattern loads the repo env file at execution time instead of making all repo secrets ambient in the whole container.
@@ -152,6 +154,7 @@ Host execution pattern:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\sukpa\Documents\projects\openclaw\docker\dume\run-managed-repo-command.ps1 ResyBot.env C:\Users\sukpa\Documents\projects\ResyBot python -m cli.main plan ...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\sukpa\Documents\projects\openclaw\docker\dume\run-managed-repo-command.ps1 none C:\Users\sukpa\Documents\projects\ResyBot python -m cli.main --help
 ```
 
 That uses the same canonical host secret file without copying secrets into the repo tree.

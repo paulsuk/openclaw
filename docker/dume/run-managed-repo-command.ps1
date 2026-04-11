@@ -31,30 +31,32 @@ if (-not (Test-Path -LiteralPath $RepoDir -PathType Container)) {
     Fail "repo dir not found: $RepoDir"
 }
 
-if (-not (Test-Path -LiteralPath $secretFile -PathType Leaf)) {
-    Fail "secret file not found: $secretFile"
-}
-
-Get-Content -LiteralPath $secretFile | ForEach-Object {
-    $line = $_.Trim()
-
-    if (-not $line -or $line.StartsWith("#")) {
-        return
+if ($SecretFileName -ne "none") {
+    if (-not (Test-Path -LiteralPath $secretFile -PathType Leaf)) {
+        Fail "secret file not found: $secretFile"
     }
 
-    $parts = $line -split "=", 2
-    if ($parts.Count -ne 2) {
-        Fail "invalid env line in ${secretFile}: $line"
+    Get-Content -LiteralPath $secretFile | ForEach-Object {
+        $line = $_.Trim()
+
+        if (-not $line -or $line.StartsWith("#")) {
+            return
+        }
+
+        $parts = $line -split "=", 2
+        if ($parts.Count -ne 2) {
+            Fail "invalid env line in ${secretFile}: $line"
+        }
+
+        $name = $parts[0].Trim()
+        $value = $parts[1]
+
+        if (-not $name) {
+            Fail "invalid env var name in ${secretFile}: $line"
+        }
+
+        [System.Environment]::SetEnvironmentVariable($name, $value, "Process")
     }
-
-    $name = $parts[0].Trim()
-    $value = $parts[1]
-
-    if (-not $name) {
-        Fail "invalid env var name in ${secretFile}: $line"
-    }
-
-    [System.Environment]::SetEnvironmentVariable($name, $value, "Process")
 }
 
 Push-Location -LiteralPath $RepoDir

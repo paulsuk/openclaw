@@ -8,6 +8,7 @@ Usage:
 
 Example:
   run-managed-repo-command.sh ResyBot.env /workspace/repos/ResyBot -- python3 -m cli.main plan ...
+  run-managed-repo-command.sh none /workspace/repos/ResyBot -- python3 -m cli.main --help
 EOF
   exit 2
 }
@@ -37,15 +38,17 @@ if [ ! -d "$repo_dir" ]; then
   exit 1
 fi
 
-if [ ! -f "$secret_file" ]; then
-  echo "[run-managed-repo-command] secret file not found: $secret_file" >&2
-  exit 1
-fi
+if [ "$secret_file_name" != "none" ]; then
+  if [ ! -f "$secret_file" ]; then
+    echo "[run-managed-repo-command] secret file not found: $secret_file" >&2
+    exit 1
+  fi
 
-set -a
-# shellcheck disable=SC1090
-. "$secret_file"
-set +a
+  set -a
+  # shellcheck disable=SC1090
+  . "$secret_file"
+  set +a
+fi
 
 cd "$repo_dir"
 exec "$@"

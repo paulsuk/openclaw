@@ -31,6 +31,19 @@ Write-Output "$env:RESY_API_KEY|$env:RESY_AUTH_TOKEN|$((Get-Location).Path)"
         throw "unexpected output: $output"
     }
 
+    Set-Content -LiteralPath (Join-Path $repoDir "show-pwd.ps1") -Value @'
+Write-Output (Get-Location).Path
+'@ -NoNewline
+
+    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath "none" $repoDir powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoDir "show-pwd.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "wrapper exited with code $LASTEXITCODE for no-secret path"
+    }
+
+    if (($output | Out-String).Trim() -ne $repoDir) {
+        throw "unexpected no-secret output: $output"
+    }
+
     Write-Output "run-managed-repo-command PowerShell smoke test passed"
 } finally {
     Remove-Item Env:OPENCLAW_MANAGED_REPO_SECRET_ROOT -ErrorAction SilentlyContinue
