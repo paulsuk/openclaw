@@ -14,7 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SYNC_BRANCH: bot/sync-upstream
-      HAS_SYNC_TOKEN: ${{ secrets.SYNC_UPSTREAM_TOKEN != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -25,6 +24,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Detect sync token
+        id: auth
+        env:
+          SYNC_UPSTREAM_TOKEN: ${{ secrets.SYNC_UPSTREAM_TOKEN }}
+        run: |
+          if [ -n "$SYNC_UPSTREAM_TOKEN" ]; then
+            echo "has_sync_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_sync_token=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Configure auth remote
         env:
@@ -50,19 +60,19 @@ jobs:
         run: git push origin HEAD:main
 
       - name: Require dedicated token for workflow-file updates
-        if: steps.sync.outputs.workflow_changes == 'true' && env.HAS_SYNC_TOKEN == 'false'
+        if: steps.sync.outputs.workflow_changes == 'true' && steps.auth.outputs.has_sync_token == 'false'
         run: |
           echo "Upstream sync included .github/workflows changes."
           echo "Add the SYNC_UPSTREAM_TOKEN repo secret so this workflow can push a review branch and open a PR."
           exit 1
 
       - name: Push review branch for workflow-file updates
-        if: steps.sync.outputs.workflow_changes == 'true' && env.HAS_SYNC_TOKEN == 'true'
+        if: steps.sync.outputs.workflow_changes == 'true' && steps.auth.outputs.has_sync_token == 'true'
         run: |
           git push --force origin HEAD:refs/heads/${SYNC_BRANCH}
 
       - name: Open or reuse review PR for workflow-file updates
-        if: steps.sync.outputs.workflow_changes == 'true' && env.HAS_SYNC_TOKEN == 'true'
+        if: steps.sync.outputs.workflow_changes == 'true' && steps.auth.outputs.has_sync_token == 'true'
         env:
           GH_TOKEN: ${{ secrets.SYNC_UPSTREAM_TOKEN }}
         run: |
