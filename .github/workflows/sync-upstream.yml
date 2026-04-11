@@ -76,9 +76,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_UPSTREAM_TOKEN }}
         run: |
-          git fetch origin main "${SYNC_BRANCH}"
-          ahead_count="$(git rev-list --count "origin/main..origin/${SYNC_BRANCH}")"
-          if [ "$ahead_count" = "0" ]; then
+          main_sha="$(git ls-remote origin "refs/heads/main" | cut -f1)"
+          branch_sha="$(git ls-remote origin "refs/heads/${SYNC_BRANCH}" | cut -f1)"
+          if [ -z "$branch_sha" ] || [ "$branch_sha" = "$main_sha" ]; then
             echo "Review branch has no commits ahead of main; skipping PR creation."
             exit 0
           fi
