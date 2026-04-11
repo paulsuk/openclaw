@@ -76,6 +76,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_UPSTREAM_TOKEN }}
         run: |
+          git fetch origin main "${SYNC_BRANCH}"
+          ahead_count="$(git rev-list --count "origin/main..origin/${SYNC_BRANCH}")"
+          if [ "$ahead_count" = "0" ]; then
+            echo "Review branch has no commits ahead of main; skipping PR creation."
+            exit 0
+          fi
+
           existing_pr="$(gh pr list --head "${SYNC_BRANCH}" --base main --state open --json number --jq '.[0].number')"
           if [ -n "$existing_pr" ]; then
             echo "Reusing existing PR #$existing_pr for upstream workflow changes."
