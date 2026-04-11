@@ -13,6 +13,8 @@ When Paul wants local DUM-E to pick up new OpenClaw fork changes, use this seque
 
 The important rule is that `ghcr.io/paulsuk/openclaw:live` is the normal release handoff surface for Paul's machine. The local overlay is a second layer on top of that base image, not the primary release vehicle.
 
+Upstream fork sync is a separate maintenance lane. Keeping `paulsuk/openclaw` current with `openclaw/openclaw` does not by itself change the running DUM-E image. The runtime still changes only when `ghcr.io/paulsuk/openclaw:live` is published or retagged and then pulled/restarted locally.
+
 ## Runtime Modes
 
 ### Base runtime
