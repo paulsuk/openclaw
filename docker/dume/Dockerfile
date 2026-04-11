@@ -8,6 +8,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 COPY docker/dume/hydrate-managed-repos.sh /usr/local/bin/hydrate-managed-repos.sh
-RUN chmod 755 /usr/local/bin/hydrate-managed-repos.sh
+COPY docker/dume/run-managed-repo-command.sh /usr/local/bin/run-managed-repo-command.sh
+RUN chmod 755 /usr/local/bin/hydrate-managed-repos.sh /usr/local/bin/run-managed-repo-command.sh
 
 USER node

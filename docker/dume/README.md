@@ -63,12 +63,24 @@ OPENCLAW_MANAGED_REPOS=/workspace/repos/ResyBot,/workspace/repos/fantasy-analyti
   - Small local overlay image on top of `OPENCLAW_IMAGE`
   - Adds `python3-pip` and `python3-venv`
   - Installs `/usr/local/bin/hydrate-managed-repos.sh`
+  - Installs `/usr/local/bin/run-managed-repo-command.sh`
 - `hydrate-managed-repos.sh`
   - Hash-based repo dependency hydrator
   - Rehydrates Python repos when `requirements.txt` changes
   - Rehydrates Node repos when `package-lock.json` changes, or `package.json` changes if no lockfile exists
+- `run-managed-repo-command.sh`
+  - Loads one repo-specific `.env` file from the private runtime secret root
+  - Executes a command inside the target managed repo with those vars exported
+- `run-managed-repo-command.ps1`
+  - Host-side equivalent for Windows development
+  - Loads one repo-specific `.env` file from the same canonical secret root
+  - Executes a command inside the target host repo with those vars exported for that process only
 - `hydrate-managed-repos.test.sh`
   - Host smoke test for the hydrator
+- `run-managed-repo-command.test.sh`
+  - Host smoke test for repo-secret injection
+- `run-managed-repo-command.ps1.test.ps1`
+  - Host PowerShell smoke test for repo-secret injection
 - `start-dume-docker.ps1`
   - Host startup wrapper
   - Reads `.env`
@@ -107,6 +119,43 @@ Managed repo hydration is optional power-user behavior, not part of the base rel
 - Power-user runtime: hydration may run automatically at startup when enabled
 - Manual hydration is only needed if the managed repos exist and you want to refresh their dependency state explicitly
 
+## Managed Repo Secrets
+
+Canonical secret root:
+
+- Host: `C:\Users\sukpa\Documents\projects\.openclaw-docker\managed-repo-secrets`
+- Container: `/home/node/.openclaw/managed-repo-secrets`
+
+Rules:
+
+- one `.env` file per managed repo
+- host and container share the same underlying files
+- do not keep repo secrets in repo trees
+- do not put repo secrets in `gdrive_sync`
+- DUM-E may edit these files if necessary, but that is not the recommended default
+
+Current canonical files:
+
+- `ResyBot.env`
+- `fantasy-analytics-api.env`
+- `fantasy-analytics-web.env` only if ever needed
+
+Container execution pattern:
+
+```sh
+/usr/local/bin/run-managed-repo-command.sh ResyBot.env /workspace/repos/ResyBot -- python3 -m cli.main plan ...
+```
+
+That pattern loads the repo env file at execution time instead of making all repo secrets ambient in the whole container.
+
+Host execution pattern:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\sukpa\Documents\projects\openclaw\docker\dume\run-managed-repo-command.ps1 ResyBot.env C:\Users\sukpa\Documents\projects\ResyBot python -m cli.main plan ...
+```
+
+That uses the same canonical host secret file without copying secrets into the repo tree.
+
 ## Verification
 
 Host:
@@ -123,6 +172,7 @@ $docker = "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
 
 & $docker exec dume-openclaw sh -lc "python3 -m pip --version"
 & $docker exec dume-openclaw sh -lc "/usr/local/bin/hydrate-managed-repos.sh /workspace/repos/ResyBot /workspace/repos/fantasy-analytics/api /workspace/repos/fantasy-analytics/web"
+& $docker exec dume-openclaw sh -lc "/usr/local/bin/run-managed-repo-command.sh ResyBot.env /workspace/repos/ResyBot -- env | grep '^RESY_'"
 & $docker exec dume-openclaw sh -lc "/workspace/repos/ResyBot/.venv/bin/python - <<'PY'
 import requests, dotenv
 print('resybot-python-ok')
@@ -132,6 +182,7 @@ import requests, dotenv, duckdb, pyarrow, scipy
 print('fa-api-python-ok')
 PY"
 & $docker exec dume-openclaw sh -lc "test -d /workspace/repos/fantasy-analytics/web/node_modules && echo fantasy-web-node-modules-ok"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\sukpa\Documents\projects\openclaw\docker\dume\run-managed-repo-command.ps1.test.ps1
 ```
 
 Release follow-through for power-user mode:
