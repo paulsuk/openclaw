@@ -177,6 +177,35 @@ describe("assistant guardrail policy", () => {
       expect(result?.prependContext).toContain("assistant-guardrails preload: gmail");
       expect(result?.prependContext).not.toContain("assistant-guardrails lifecycle");
     });
+
+    it("does not inject a lifecycle reminder for single-surface keyword prompts", () => {
+      vi.spyOn(fs, "statSync").mockImplementation((filePath: fs.PathLike) => {
+        const file = String(filePath);
+        return {
+          isFile: () => file.includes("services.md") || file.includes("gmail.md"),
+          size: 128,
+        } as fs.Stats;
+      });
+      vi.spyOn(fs, "readFileSync").mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+        if (String(filePath).includes("services.md")) {
+          return "services root";
+        }
+        return "gmail service doc";
+      });
+
+      const result = buildServicePreload({
+        event: {
+          prompt: "design a gmail reply",
+          messages: [],
+        },
+        ctx: {
+          workspaceDir: "/workspace/shared",
+        },
+      });
+
+      expect(result?.prependContext).toContain("assistant-guardrails preload: gmail");
+      expect(result?.prependContext).not.toContain("assistant-guardrails lifecycle");
+    });
   });
 
   describe("buildLifecycleReminder", () => {
@@ -200,6 +229,22 @@ describe("assistant guardrail policy", () => {
 
       expect(result?.prependContext).toContain("Check the current workstream files");
       expect(result).not.toHaveProperty("block");
+    });
+
+    it("does not return a reminder for broad-sounding single-surface prompts", () => {
+      expect(
+        buildLifecycleReminder({
+          prompt: "design a gmail reply",
+          messages: [],
+        }),
+      ).toBeUndefined();
+
+      expect(
+        buildLifecycleReminder({
+          prompt: "investigate this login bug",
+          messages: [],
+        }),
+      ).toBeUndefined();
     });
 
     it("returns undefined for tiny one-off prompts", () => {

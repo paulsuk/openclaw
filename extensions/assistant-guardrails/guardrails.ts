@@ -57,6 +57,19 @@ const LIFECYCLE_BROAD_PROMPT_PATTERNS: readonly RegExp[] = [
   /\binvestigat(?:e|ion)\b/i,
 ];
 
+const LIFECYCLE_MULTI_SURFACE_PATTERNS: readonly RegExp[] = [
+  /\bdocs?\b/i,
+  /\brepos?\b/i,
+  /\bservices?\b/i,
+  /\bworkflow\b/i,
+  /\bruntime\b/i,
+  /\bhooks?\b/i,
+  /\bcontext\b/i,
+  /\bwrapup\b/i,
+  /\bproject\b/i,
+  /\bworkstream\b/i,
+];
+
 const EXPLICIT_WORKSTREAM_PATTERNS: readonly RegExp[] = [
   /\bworkstream\b/i,
   /\bWORKSTREAM\.md\b/i,
@@ -202,7 +215,12 @@ export function buildLifecycleReminder(
     };
   }
 
-  if (LIFECYCLE_BROAD_PROMPT_PATTERNS.some((pattern) => pattern.test(promptText))) {
+  const hasBroadWorkSignal = LIFECYCLE_BROAD_PROMPT_PATTERNS.some((pattern) => pattern.test(promptText));
+  const hasMultiSurfaceSignal = LIFECYCLE_MULTI_SURFACE_PATTERNS.some((pattern) =>
+    pattern.test(promptText),
+  );
+
+  if (hasBroadWorkSignal && hasMultiSurfaceSignal) {
     return {
       prependContext:
         "[assistant-guardrails lifecycle] This looks like broad work. Resolve the target project and whether the thread should stay project-root or use a workstream before proceeding.",
