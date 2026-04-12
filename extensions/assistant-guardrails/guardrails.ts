@@ -49,6 +49,21 @@ const SERVICE_MATCHERS: Array<{ service: ServiceId; patterns: RegExp[] }> = [
   },
 ];
 
+const LIFECYCLE_BROAD_PROMPT_PATTERNS: readonly RegExp[] = [
+  /\bdesign\b/i,
+  /\bmigration\b/i,
+  /\brollout\b/i,
+  /\bhardening\b/i,
+  /\binvestigat(?:e|ion)\b/i,
+];
+
+const EXPLICIT_WORKSTREAM_PATTERNS: readonly RegExp[] = [
+  /\bworkstream\b/i,
+  /\bWORKSTREAM\.md\b/i,
+  /\bopen-loops\.md\b/i,
+  /[/\\]workstreams[/\\]/i,
+];
+
 function normalizePromptText(event: PluginHookBeforePromptBuildEvent): string {
   const messageText = event.messages
     .map((msg) => {
@@ -129,8 +144,15 @@ export function buildServicePreload(params: {
   ctx?: PluginHookAgentContext;
 }): { prependContext: string } | undefined {
   const promptText = normalizePromptText(params.event);
+  const lifecycleReminder = buildLifecycleReminder(params.event);
   const matchedService = matchServiceFromPrompt(promptText);
   if (!matchedService) {
+    if (lifecycleReminder) {
+      log.debug(
+        `[assistant-guardrails] preload ${JSON.stringify({ hook: "before_prompt_build", action: "preload_lifecycle_reminder", skipped: false })}`,
+      );
+      return lifecycleReminder;
+    }
     log.debug(
       `[assistant-guardrails] preload ${JSON.stringify({ hook: "before_prompt_build", action: "preload_service_docs", matched_service: null, skipped: true, skip_reason: "no_unique_service_match" })}`,
     );
@@ -142,6 +164,12 @@ export function buildServicePreload(params: {
   const servicesDoc = readTrustedDoc(servicesDocPath, params.ctx);
   const serviceDoc = readTrustedDoc(serviceDocPath, params.ctx);
   if (!servicesDoc || !serviceDoc) {
+    if (lifecycleReminder) {
+      log.warn(
+        `[assistant-guardrails] preload ${JSON.stringify({ hook: "before_prompt_build", action: "preload_service_docs", matched_service: matchedService, skipped: true, skip_reason: "preload_read_failed", lifecycle_reminder_only: true })}`,
+      );
+      return lifecycleReminder;
+    }
     log.warn(
       `[assistant-guardrails] preload ${JSON.stringify({ hook: "before_prompt_build", action: "preload_service_docs", matched_service: matchedService, skipped: true, skip_reason: "preload_read_failed" })}`,
     );
@@ -154,10 +182,34 @@ export function buildServicePreload(params: {
 
   return {
     prependContext: [
+      lifecycleReminder?.prependContext,
       `[assistant-guardrails preload: services]\n${servicesDoc}`,
       `[assistant-guardrails preload: ${matchedService}]\n${serviceDoc}`,
-    ].join("\n\n"),
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
   };
+}
+
+export function buildLifecycleReminder(
+  event: PluginHookBeforePromptBuildEvent,
+): { prependContext: string } | undefined {
+  const promptText = normalizePromptText(event);
+  if (EXPLICIT_WORKSTREAM_PATTERNS.some((pattern) => pattern.test(promptText))) {
+    return {
+      prependContext:
+        "[assistant-guardrails lifecycle] A workstream is already explicit here. Check the current workstream files before relying on memory, and update that workstream on wrapup if it stays in play.",
+    };
+  }
+
+  if (LIFECYCLE_BROAD_PROMPT_PATTERNS.some((pattern) => pattern.test(promptText))) {
+    return {
+      prependContext:
+        "[assistant-guardrails lifecycle] This looks like broad work. Resolve the target project and whether the thread should stay project-root or use a workstream before proceeding.",
+    };
+  }
+
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------

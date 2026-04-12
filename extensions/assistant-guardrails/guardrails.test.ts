@@ -5,6 +5,7 @@ import * as guardrails from "./guardrails.js";
 
 const {
   buildFileWriteGuardrail,
+  buildLifecycleReminder,
   buildServicePreload,
   buildToolDeny,
   buildWritePolicyReminder,
@@ -130,6 +131,83 @@ describe("assistant guardrail policy", () => {
           messages: [],
         },
       });
+      expect(result).toBeUndefined();
+    });
+
+    it("includes a lifecycle reminder for broad multi-surface work", () => {
+      const result = buildServicePreload({
+        event: {
+          prompt: "Design a rollout for gmail and service docs hardening",
+          messages: [],
+        },
+        ctx: {
+          workspaceDir: "/workspace/shared",
+        },
+      });
+
+      expect(result?.prependContext).toContain("assistant-guardrails lifecycle");
+      expect(result?.prependContext).toContain("Resolve the target project");
+    });
+
+    it("does not inject a lifecycle reminder for tiny one-off prompts", () => {
+      vi.spyOn(fs, "statSync").mockImplementation((filePath: fs.PathLike) => {
+        const file = String(filePath);
+        return {
+          isFile: () => file.includes("services.md") || file.includes("gmail.md"),
+          size: 128,
+        } as fs.Stats;
+      });
+      vi.spyOn(fs, "readFileSync").mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+        if (String(filePath).includes("services.md")) {
+          return "services root";
+        }
+        return "gmail service doc";
+      });
+
+      const result = buildServicePreload({
+        event: {
+          prompt: "check my gmail inbox",
+          messages: [],
+        },
+        ctx: {
+          workspaceDir: "/workspace/shared",
+        },
+      });
+
+      expect(result?.prependContext).toContain("assistant-guardrails preload: gmail");
+      expect(result?.prependContext).not.toContain("assistant-guardrails lifecycle");
+    });
+  });
+
+  describe("buildLifecycleReminder", () => {
+    it("returns an advisory reminder for broad work prompts", () => {
+      const result = buildLifecycleReminder({
+        prompt: "Investigate a migration and rollout plan for this runtime",
+        messages: [],
+      });
+
+      expect(result).toEqual({
+        prependContext: expect.stringContaining("assistant-guardrails lifecycle"),
+      });
+      expect(result).not.toHaveProperty("block");
+    });
+
+    it("returns an advisory reminder when a workstream path is explicit", () => {
+      const result = buildLifecycleReminder({
+        prompt: "Update /workspace/shared/gdrive_sync/projects/_assistant/workstreams/test/open-loops.md",
+        messages: [],
+      });
+
+      expect(result?.prependContext).toContain("Check the current workstream files");
+      expect(result).not.toHaveProperty("block");
+    });
+
+    it("returns undefined for tiny one-off prompts", () => {
+      const result = buildLifecycleReminder({
+        prompt: "what time is it",
+        messages: [],
+      });
+
       expect(result).toBeUndefined();
     });
   });
