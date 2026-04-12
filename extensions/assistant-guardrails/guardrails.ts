@@ -61,12 +61,9 @@ const LIFECYCLE_MULTI_SURFACE_PATTERNS: readonly RegExp[] = [
   /\bdocs?\b/i,
   /\brepos?\b/i,
   /\bservices?\b/i,
-  /\bworkflow\b/i,
   /\bruntime\b/i,
   /\bhooks?\b/i,
-  /\bcontext\b/i,
   /\bwrapup\b/i,
-  /\bproject\b/i,
   /\bworkstream\b/i,
 ];
 

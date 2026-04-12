@@ -228,6 +228,7 @@ describe("assistant guardrail policy", () => {
       });
 
       expect(result?.prependContext).toContain("Check the current workstream files");
+      expect(result?.prependContext).not.toContain("_assistant");
       expect(result).not.toHaveProperty("block");
     });
 
@@ -242,6 +243,22 @@ describe("assistant guardrail policy", () => {
       expect(
         buildLifecycleReminder({
           prompt: "investigate this login bug",
+          messages: [],
+        }),
+      ).toBeUndefined();
+
+      expect(
+        buildLifecycleReminder({
+          prompt: "design the project context for login notes",
+          messages: [],
+        }),
+      ).toBeUndefined();
+    });
+
+    it("stays quiet for narrow operational prompts", () => {
+      expect(
+        buildLifecycleReminder({
+          prompt: "restart the runtime and check the health endpoint",
           messages: [],
         }),
       ).toBeUndefined();
