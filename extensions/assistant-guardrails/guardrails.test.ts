@@ -10,6 +10,7 @@ const {
   buildToolDeny,
   buildWritePolicyReminder,
   cacheWorkspaceDir,
+  extractApplyPatchWritePaths,
   extractBashWritePaths,
   isApprovedWritePath,
   isUnderGitRepo,
@@ -674,6 +675,171 @@ describe("assistant guardrail policy", () => {
     it("returns empty array for cp with only one arg (ambiguous)", () => {
       // cp with a single arg — can't determine destination
       expect(extractBashWritePaths("cp src.txt")).toEqual([]);
+    });
+  });
+
+  describe("extractApplyPatchWritePaths", () => {
+    const { extractApplyPatchWritePaths } = guardrails;
+
+    it("extracts absolute Add File path", () => {
+      const input = [
+        "*** Begin Patch",
+        "*** Add File: /workspace/repos/ResyBot/new_module.py",
+        "+content",
+        "*** End Patch",
+      ].join("\n");
+      expect(extractApplyPatchWritePaths(input)).toEqual(["/workspace/repos/ResyBot/new_module.py"]);
+    });
+
+    it("extracts absolute Update File path", () => {
+      const input = [
+        "*** Begin Patch",
+        "*** Update File: /workspace/shared/gdrive_sync/projects/_assistant/notes.md",
+        "@@ context",
+        "-old",
+        "+new",
+        "*** End Patch",
+      ].join("\n");
+      expect(extractApplyPatchWritePaths(input)).toEqual([
+        "/workspace/shared/gdrive_sync/projects/_assistant/notes.md",
+      ]);
+    });
+
+    it("extracts Move to destination path", () => {
+      const input = [
+        "*** Begin Patch",
+        "*** Update File: /workspace/repos/ResyBot/old.py",
+        "*** Move to: /workspace/repos/ResyBot/new.py",
+        "*** End Patch",
+      ].join("\n");
+      expect(extractApplyPatchWritePaths(input)).toEqual([
+        "/workspace/repos/ResyBot/old.py",
+        "/workspace/repos/ResyBot/new.py",
+      ]);
+    });
+
+    it("resolves relative paths against workspaceDir", () => {
+      const input = [
+        "*** Begin Patch",
+        "*** Update File: src/main.ts",
+        "@@ context",
+        "-old",
+        "+new",
+        "*** End Patch",
+      ].join("\n");
+      expect(extractApplyPatchWritePaths(input, "/workspace/shared")).toEqual([
+        path.resolve("/workspace/shared", "src/main.ts"),
+      ]);
+    });
+
+    it("does not extract Delete File paths", () => {
+      const input = [
+        "*** Begin Patch",
+        "*** Delete File: /workspace/repos/ResyBot/old.py",
+        "*** End Patch",
+      ].join("\n");
+      expect(extractApplyPatchWritePaths(input)).toEqual([]);
+    });
+
+    it("extracts multiple paths from a multi-file patch", () => {
+      const input = [
+        "*** Begin Patch",
+        "*** Update File: /workspace/repos/ResyBot/src/a.py",
+        "@@ context",
+        "-old",
+        "+new",
+        "*** Add File: /workspace/repos/ResyBot/src/b.py",
+        "+new file",
+        "*** End Patch",
+      ].join("\n");
+      expect(extractApplyPatchWritePaths(input)).toEqual([
+        "/workspace/repos/ResyBot/src/a.py",
+        "/workspace/repos/ResyBot/src/b.py",
+      ]);
+    });
+  });
+
+  describe("buildFileWriteGuardrail — apply_patch", () => {
+    function normalizeSep(p: string): string {
+      return p.replace(/\\/g, "/");
+    }
+
+    it("allows apply_patch to a managed repo (git repo)", () => {
+      vi.spyOn(fs, "statSync").mockImplementation(() => ({ isDirectory: () => false } as fs.Stats));
+      vi.spyOn(fs, "existsSync").mockImplementation((p: fs.PathLike) => {
+        const n = normalizeSep(String(p));
+        return n.endsWith("/repos/ResyBot/.git");
+      });
+
+      const input = [
+        "*** Begin Patch",
+        "*** Update File: /workspace/repos/ResyBot/src/bot.py",
+        "@@ context",
+        "-old",
+        "+new",
+        "*** End Patch",
+      ].join("\n");
+
+      const result = buildFileWriteGuardrail({
+        event: { toolName: "apply_patch", params: { input } },
+      });
+      expect(result).toBeUndefined();
+    });
+
+    it("allows apply_patch to a path inside workspace", () => {
+      cacheWorkspaceDir({ workspaceDir: "/workspace/shared" });
+      vi.spyOn(fs, "statSync").mockImplementation(() => ({ isDirectory: () => false } as fs.Stats));
+      vi.spyOn(fs, "existsSync").mockReturnValue(false);
+
+      const input = [
+        "*** Begin Patch",
+        "*** Update File: /workspace/shared/gdrive_sync/projects/_assistant/notes.md",
+        "@@ context",
+        "-old",
+        "+new",
+        "*** End Patch",
+      ].join("\n");
+
+      const result = buildFileWriteGuardrail({
+        event: { toolName: "apply_patch", params: { input } },
+      });
+      expect(result).toBeUndefined();
+    });
+
+    it("blocks apply_patch to a path outside workspace and git repos", () => {
+      cacheWorkspaceDir({ workspaceDir: "/workspace/shared" });
+      vi.spyOn(fs, "statSync").mockImplementation(() => ({ isDirectory: () => false } as fs.Stats));
+      vi.spyOn(fs, "existsSync").mockReturnValue(false);
+
+      const input = [
+        "*** Begin Patch",
+        "*** Update File: /etc/hosts",
+        "@@ context",
+        "-old",
+        "+new",
+        "*** End Patch",
+      ].join("\n");
+
+      const result = buildFileWriteGuardrail({
+        event: { toolName: "apply_patch", params: { input } },
+      });
+      expect(result).toEqual({
+        block: true,
+        blockReason: expect.stringContaining("outside approved locations"),
+      });
+    });
+
+    it("returns undefined for apply_patch with no detectable write paths", () => {
+      const input = [
+        "*** Begin Patch",
+        "*** Delete File: /workspace/repos/ResyBot/old.py",
+        "*** End Patch",
+      ].join("\n");
+
+      const result = buildFileWriteGuardrail({
+        event: { toolName: "apply_patch", params: { input } },
+      });
+      expect(result).toBeUndefined();
     });
   });
 });

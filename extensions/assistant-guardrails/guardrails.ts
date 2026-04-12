@@ -492,6 +492,30 @@ export function extractBashDeletePaths(command: string): string[] {
   return extractTokens(removeMatch[1] ?? "").filter((token) => !token.startsWith("-") && looksLikePath(token));
 }
 
+// Matches apply_patch write markers: Add File, Update File, Move to (destination).
+// Delete File is intentionally excluded — we don't block deletes, consistent with
+// how Bash `rm` is not intercepted.
+const APPLY_PATCH_WRITE_MARKER_RE = /^\*\*\* (?:Add File|Update File|Move to): (.+)$/mg;
+
+/**
+ * Extract candidate destination paths from an apply_patch input string.
+ * Paths in patches are relative to the workspace dir (apply_patch cwd), so
+ * relative paths are resolved against workspaceDir before being returned.
+ */
+export function extractApplyPatchWritePaths(input: string, workspaceDir?: string): string[] {
+  const paths: string[] = [];
+  APPLY_PATCH_WRITE_MARKER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = APPLY_PATCH_WRITE_MARKER_RE.exec(input)) !== null) {
+    const p = m[1]?.trim();
+    if (!p) continue;
+    // Resolve relative paths against workspaceDir (apply_patch cwd), not process.cwd()
+    const abs = path.isAbsolute(p) ? p : path.resolve(workspaceDir ?? process.cwd(), p);
+    paths.push(abs);
+  }
+  return paths;
+}
+
 function extractWritePath(event: PluginHookBeforeToolCallEvent): string[] {
   const name = event.toolName.toLowerCase();
   if (name === "write" || name === "edit" || name === "multiedit") {
@@ -501,6 +525,10 @@ function extractWritePath(event: PluginHookBeforeToolCallEvent): string[] {
   if (name === "bash") {
     const command = event.params.command;
     return typeof command === "string" ? extractBashWritePaths(command) : [];
+  }
+  if (name === "apply_patch") {
+    const input = event.params.input;
+    return typeof input === "string" ? extractApplyPatchWritePaths(input, _cachedWorkspaceDir) : [];
   }
   return [];
 }
