@@ -188,9 +188,9 @@ describe("assistant guardrail policy", () => {
   describe("buildWritePolicyReminder", () => {
     it("returns a compact prependContext with write policy guidance", () => {
       const result = buildWritePolicyReminder();
-      expect(result.prependContext).toContain("gdrive_sync");
-      expect(result.prependContext).toContain("exchange");
+      expect(result.prependContext).toContain("shared workspace");
       expect(result.prependContext).toContain("git");
+      expect(result.prependContext).toContain("Secrets");
       // Compact: single line, well under 200 chars
       expect(result.prependContext.length).toBeLessThan(200);
     });
@@ -246,6 +246,16 @@ describe("assistant guardrail policy", () => {
       expect(isApprovedWritePath("/workspace/shared/gdrive_sync/projects/_assistant/notes.md")).toBe(
         true,
       );
+    });
+
+    it("allows writes inside shared paths without relying on cached workspace state", () => {
+      vi.spyOn(fs, "statSync").mockImplementation(() => ({ isDirectory: () => false } as fs.Stats));
+      vi.spyOn(fs, "existsSync").mockReturnValue(false);
+
+      expect(isApprovedWritePath("/workspace/shared/gdrive_sync/projects/_assistant/notes.md")).toBe(
+        true,
+      );
+      expect(isApprovedWritePath("/workspace/shared/exchange/output.txt")).toBe(true);
     });
 
     it("allows writes inside exchange when workspace is cached", () => {
@@ -340,6 +350,75 @@ describe("assistant guardrail policy", () => {
           params: { file_path: "/workspace/shared/gdrive_sync/projects/_assistant/notes.md" },
         },
       });
+      expect(result).toBeUndefined();
+    });
+
+    it("blocks secret-like writes under shared synced storage", () => {
+      cacheWorkspaceDir({ workspaceDir: "/workspace/shared" });
+      vi.spyOn(fs, "statSync").mockImplementation(() => ({ isDirectory: () => false } as fs.Stats));
+      vi.spyOn(fs, "existsSync").mockReturnValue(false);
+
+      const result = buildFileWriteGuardrail({
+        event: {
+          toolName: "Write",
+          params: { file_path: "/workspace/shared/gdrive_sync/projects/_assistant/.env" },
+        },
+      });
+
+      expect(result).toEqual({
+        block: true,
+        blockReason: expect.stringContaining("Secrets are blocked"),
+      });
+    });
+
+    it("blocks repo-local secret files in managed repos", () => {
+      vi.spyOn(fs, "statSync").mockImplementation(() => ({ isDirectory: () => false } as fs.Stats));
+      vi.spyOn(fs, "existsSync").mockImplementation((p: fs.PathLike) => {
+        const n = normalizeSep(String(p));
+        return n.endsWith("/workspace/repos/ResyBot/.git");
+      });
+
+      const result = buildFileWriteGuardrail({
+        event: {
+          toolName: "Write",
+          params: { file_path: "C:\\workspace\\repos\\ResyBot\\.env" },
+        },
+      });
+
+      expect(result).toEqual({
+        block: true,
+        blockReason: expect.stringContaining("Repo-local secret files are blocked"),
+      });
+    });
+
+    it("blocks repo-local secret files in host-local code repos", () => {
+      vi.spyOn(fs, "statSync").mockImplementation(() => ({ isDirectory: () => false } as fs.Stats));
+      vi.spyOn(fs, "existsSync").mockImplementation((p: fs.PathLike) => {
+        const n = normalizeSep(String(p));
+        return n.endsWith("/Users/sukpa/Documents/projects/ResyBot/.git");
+      });
+
+      const result = buildFileWriteGuardrail({
+        event: {
+          toolName: "Write",
+          params: { file_path: "C:\\Users\\sukpa\\Documents\\projects\\ResyBot\\.env" },
+        },
+      });
+
+      expect(result).toEqual({
+        block: true,
+        blockReason: expect.stringContaining("Repo-local secret files are blocked"),
+      });
+    });
+
+    it("allows cleanup in approved private runtime-owned surfaces", () => {
+      const result = buildFileWriteGuardrail({
+        event: {
+          toolName: "Bash",
+          params: { command: "rm -rf /home/node/.openclaw/workspace/tmp-run" },
+        },
+      });
+
       expect(result).toBeUndefined();
     });
 

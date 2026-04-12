@@ -188,6 +188,85 @@ const SYSTEM_TEMP_ROOTS: readonly string[] = [
   ...new Set([os.tmpdir(), "/tmp", "/var/tmp"].map((p) => path.resolve(p))),
 ];
 
+const SECRET_LIKE_BASENAME_PATTERNS: readonly RegExp[] = [
+  /^\.env(?:\..+)?$/i,
+  /^\.npmrc$/i,
+  /^\.pypirc$/i,
+  /^client_secret\.json$/i,
+  /^credentials\.json$/i,
+  /^token\.json$/i,
+  /^auth\.json$/i,
+  /^secrets\.json$/i,
+  /^id_rsa(?:\.pub)?$/i,
+  /^id_ed25519(?:\.pub)?$/i,
+  /^.+\.(pem|key)$/i,
+];
+
+const APPROVED_PRIVATE_RUNTIME_DELETE_PREFIXES = [
+  "/home/node/.openclaw/workspace/",
+  "/home/node/.openclaw/logs/",
+  "/tmp/openclaw/",
+  "C:/Users/sukpa/Documents/projects/.openclaw-docker/workspace/",
+  "C:/Users/sukpa/Documents/projects/.openclaw-docker/logs/",
+] as const;
+
+const HOST_LOCAL_CODE_REPO_PREFIXES = [
+  "C:/Users/sukpa/Documents/projects/ResyBot/",
+  "C:/Users/sukpa/Documents/projects/fantasy-analytics/",
+  "C:/Users/sukpa/Documents/projects/openclaw/",
+] as const;
+
+const APPROVED_WRITE_PREFIXES = [
+  "/workspace/shared/",
+  "C:/Users/sukpa/Documents/projects/.openclaw-docker/workspace/",
+  "C:/Users/sukpa/Documents/projects/gdrive_sync/",
+  "C:/Users/sukpa/Documents/projects/exchange/",
+] as const;
+
+function normalizeAuthorityPath(filePath: string): string {
+  const slashed = filePath.trim().replace(/\\/g, "/");
+  const driveMatch = /^([A-Za-z]:)(\/.*)?$/.exec(slashed);
+  if (driveMatch) {
+    const drive = `${driveMatch[1][0]?.toUpperCase()}:`;
+    const rest = path.posix.normalize(driveMatch[2] || "/");
+    return `${drive}${rest}`;
+  }
+  return path.posix.normalize(slashed);
+}
+
+function isUnderNormalizedPrefix(normalizedPath: string, prefix: string): boolean {
+  return normalizedPath === prefix.slice(0, -1) || normalizedPath.startsWith(prefix);
+}
+
+function isSecretLikePath(filePath: string): boolean {
+  const normalized = normalizeAuthorityPath(filePath);
+  const basename = path.posix.basename(normalized);
+  return SECRET_LIKE_BASENAME_PATTERNS.some((pattern) => pattern.test(basename));
+}
+
+function isSharedSyncedPath(filePath: string): boolean {
+  const normalized = normalizeAuthorityPath(filePath);
+  return (
+    isUnderNormalizedPrefix(normalized, "/workspace/shared/gdrive_sync/") ||
+    isUnderNormalizedPrefix(normalized, "C:/Users/sukpa/Documents/projects/gdrive_sync/")
+  );
+}
+
+function isManagedRepoPath(filePath: string): boolean {
+  const normalized = normalizeAuthorityPath(filePath);
+  return (
+    normalized.includes("/workspace/repos/") ||
+    HOST_LOCAL_CODE_REPO_PREFIXES.some((prefix) => isUnderNormalizedPrefix(normalized, prefix))
+  );
+}
+
+function isApprovedPrivateRuntimeDeletePath(filePath: string): boolean {
+  const normalized = normalizeAuthorityPath(filePath);
+  return APPROVED_PRIVATE_RUNTIME_DELETE_PREFIXES.some((prefix) =>
+    isUnderNormalizedPrefix(normalized, prefix),
+  );
+}
+
 function isTempPath(resolvedPath: string): boolean {
   return SYSTEM_TEMP_ROOTS.some(
     (tmp) => resolvedPath === tmp || resolvedPath.startsWith(tmp + path.sep),
@@ -247,11 +326,9 @@ export function isApprovedWritePath(filePath: string): boolean {
 
   if (isTempPath(resolved)) return true;
 
-  // Allow anywhere within the workspace (DUM-E's private space, includes gdrive_sync and exchange)
-  const workspace = _cachedWorkspaceDir;
-  if (workspace) {
-    const ws = path.resolve(workspace);
-    if (resolved === ws || resolved.startsWith(ws + path.sep)) return true;
+  const normalized = normalizeAuthorityPath(filePath);
+  if (APPROVED_WRITE_PREFIXES.some((prefix) => isUnderNormalizedPrefix(normalized, prefix))) {
+    return true;
   }
 
   // Allow git repos (version-controlled work, including repos outside the workspace)
@@ -338,6 +415,16 @@ export function extractBashWritePaths(command: string): string[] {
   return paths;
 }
 
+export function extractBashDeletePaths(command: string): string[] {
+  const trimmed = command.trim();
+  const removeMatch = /^\s*rm(?:\s+-\S+)*\s+(.+)/.exec(trimmed);
+  if (!removeMatch) {
+    return [];
+  }
+
+  return extractTokens(removeMatch[1] ?? "").filter((token) => !token.startsWith("-") && looksLikePath(token));
+}
+
 function extractWritePath(event: PluginHookBeforeToolCallEvent): string[] {
   const name = event.toolName.toLowerCase();
   if (name === "write" || name === "edit" || name === "multiedit") {
@@ -353,7 +440,7 @@ function extractWritePath(event: PluginHookBeforeToolCallEvent): string[] {
 
 // Kept intentionally compact — this is injected on every LLM call.
 const WRITE_POLICY_REMINDER =
-  "[policy] File writes allowed in: workspace/**, git repos, /tmp only. Blocked elsewhere — use exchange/ or gdrive_sync/.";
+  "[policy] File writes allowed in shared workspace, approved git repos, and /tmp. Secrets stay out of shared storage and repo-local files.";
 
 export function buildWritePolicyReminder(): { prependContext: string } {
   return { prependContext: WRITE_POLICY_REMINDER };
@@ -363,8 +450,50 @@ export function buildFileWriteGuardrail(params: {
   event: PluginHookBeforeToolCallEvent;
   ctx?: PluginHookToolContext;
 }): { block: true; blockReason: string } | undefined {
+  if (params.event.toolName.toLowerCase() === "bash") {
+    const command = params.event.params.command;
+    if (typeof command === "string") {
+      const deletePaths = extractBashDeletePaths(command);
+      if (deletePaths.length > 0 && deletePaths.every((p) => isApprovedPrivateRuntimeDeletePath(p))) {
+        return undefined;
+      }
+    }
+  }
+
   const paths = extractWritePath(params.event);
   if (paths.length === 0) return undefined;
+
+  const sharedSecret = paths.find((p) => isSharedSyncedPath(p) && isSecretLikePath(p));
+  if (sharedSecret) {
+    const reason = `Secrets are blocked under shared synced storage: '${sharedSecret}'.`;
+    log.warn(
+      `[assistant-guardrails] deny ${JSON.stringify({
+        hook: "before_tool_call",
+        action: "deny_file_write",
+        tool_name: params.event.toolName,
+        matched_rule: "shared-synced-secret-write-block",
+        denied_paths: [sharedSecret],
+        deny_reason: reason,
+      })}`,
+    );
+    return { block: true, blockReason: reason };
+  }
+
+  const managedRepoSecret = paths.find((p) => isManagedRepoPath(p) && isSecretLikePath(p));
+  if (managedRepoSecret) {
+    const reason = `Repo-local secret files are blocked in managed repos: '${managedRepoSecret}'.`;
+    log.warn(
+      `[assistant-guardrails] deny ${JSON.stringify({
+        hook: "before_tool_call",
+        action: "deny_file_write",
+        tool_name: params.event.toolName,
+        matched_rule: "managed-repo-secret-write-block",
+        denied_paths: [managedRepoSecret],
+        deny_reason: reason,
+      })}`,
+    );
+    return { block: true, blockReason: reason };
+  }
 
   const denied = paths.filter((p) => !isApprovedWritePath(p));
   if (denied.length === 0) return undefined;
