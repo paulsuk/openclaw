@@ -1,7 +1,6 @@
-import type { AuthProfileStore } from "../agents/auth-profiles.js";
 import { describeFailoverError, isFailoverError } from "../agents/failover-error.js";
 import type { FallbackAttempt } from "../agents/model-fallback.types.js";
-import type { OpenClawConfig } from "../config/config.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
@@ -13,39 +12,12 @@ import {
 import { parseImageGenerationModelRef } from "./model-ref.js";
 import { resolveImageGenerationOverrides } from "./normalization.js";
 import { getImageGenerationProvider, listImageGenerationProviders } from "./provider-registry.js";
-import type {
-  GeneratedImageAsset,
-  ImageGenerationIgnoredOverride,
-  ImageGenerationNormalization,
-  ImageGenerationResolution,
-  ImageGenerationResult,
-  ImageGenerationSourceImage,
-} from "./types.js";
+import type { GenerateImageParams, GenerateImageRuntimeResult } from "./runtime-types.js";
+import type { ImageGenerationResult } from "./types.js";
 
 const log = createSubsystemLogger("image-generation");
 
-export type GenerateImageParams = {
-  cfg: OpenClawConfig;
-  prompt: string;
-  agentDir?: string;
-  authStore?: AuthProfileStore;
-  modelOverride?: string;
-  count?: number;
-  size?: string;
-  aspectRatio?: string;
-  resolution?: ImageGenerationResolution;
-  inputImages?: ImageGenerationSourceImage[];
-};
-
-export type GenerateImageRuntimeResult = {
-  images: GeneratedImageAsset[];
-  provider: string;
-  model: string;
-  attempts: FallbackAttempt[];
-  normalization?: ImageGenerationNormalization;
-  metadata?: Record<string, unknown>;
-  ignoredOverrides: ImageGenerationIgnoredOverride[];
-};
+export type { GenerateImageParams, GenerateImageRuntimeResult } from "./runtime-types.js";
 
 function buildNoImageGenerationModelConfiguredMessage(cfg: OpenClawConfig): string {
   return buildNoCapabilityModelConfiguredMessage({
@@ -87,6 +59,9 @@ export async function generateImage(
         error,
       });
       lastError = new Error(error);
+      log.warn(
+        `image-generation candidate failed: ${candidate.provider}/${candidate.model}: ${error}`,
+      );
       continue;
     }
 
@@ -96,6 +71,8 @@ export async function generateImage(
         size: params.size,
         aspectRatio: params.aspectRatio,
         resolution: params.resolution,
+        quality: params.quality,
+        outputFormat: params.outputFormat,
         inputImages: params.inputImages,
       });
       const result: ImageGenerationResult = await provider.generateImage({
@@ -109,7 +86,11 @@ export async function generateImage(
         size: sanitized.size,
         aspectRatio: sanitized.aspectRatio,
         resolution: sanitized.resolution,
+        quality: sanitized.quality,
+        outputFormat: sanitized.outputFormat,
         inputImages: params.inputImages,
+        ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+        providerOptions: params.providerOptions,
       });
       if (!Array.isArray(result.images) || result.images.length === 0) {
         throw new Error("Image generation provider returned no images.");
@@ -140,11 +121,15 @@ export async function generateImage(
         status: described?.status,
         code: described?.code,
       });
-      log.debug(`image-generation candidate failed: ${candidate.provider}/${candidate.model}`);
+      log.warn(
+        `image-generation candidate failed: ${candidate.provider}/${candidate.model}: ${
+          described?.message ?? formatErrorMessage(err)
+        }`,
+      );
     }
   }
 
-  throwCapabilityGenerationFailure({
+  return throwCapabilityGenerationFailure({
     capabilityLabel: "image generation",
     attempts,
     lastError,

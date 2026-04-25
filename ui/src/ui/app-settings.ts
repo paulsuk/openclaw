@@ -1,4 +1,5 @@
 import { roleScopesAllow } from "../../../src/shared/operator-scope-compat.js";
+import { t } from "../i18n/index.ts";
 import { refreshChat } from "./app-chat.ts";
 import {
   startLogsPolling,
@@ -7,24 +8,44 @@ import {
   stopDebugPolling,
 } from "./app-polling.ts";
 import { scheduleChatScroll, scheduleLogsScroll } from "./app-scroll.ts";
-import type { OpenClawApp } from "./app.ts";
-import { loadAgentFiles } from "./controllers/agent-files.ts";
-import { loadAgentIdentities, loadAgentIdentity } from "./controllers/agent-identity.ts";
-import { loadAgentSkills } from "./controllers/agent-skills.ts";
-import { loadAgents } from "./controllers/agents.ts";
-import { loadChannels } from "./controllers/channels.ts";
-import { loadConfig, loadConfigSchema } from "./controllers/config.ts";
-import { loadCronJobsPage, loadCronRuns, loadCronStatus } from "./controllers/cron.ts";
-import { loadDebug } from "./controllers/debug.ts";
-import { loadDevices } from "./controllers/devices.ts";
-import { loadDreamDiary, loadDreamingStatus } from "./controllers/dreaming.ts";
-import { loadExecApprovals } from "./controllers/exec-approvals.ts";
-import { loadLogs } from "./controllers/logs.ts";
-import { loadNodes } from "./controllers/nodes.ts";
-import { loadPresence } from "./controllers/presence.ts";
-import { loadSessions } from "./controllers/sessions.ts";
-import { loadSkills } from "./controllers/skills.ts";
-import { loadUsage } from "./controllers/usage.ts";
+import { loadAgentFiles, type AgentFilesState } from "./controllers/agent-files.ts";
+import {
+  loadAgentIdentities,
+  loadAgentIdentity,
+  type AgentIdentityState,
+} from "./controllers/agent-identity.ts";
+import { loadAgentSkills, type AgentSkillsState } from "./controllers/agent-skills.ts";
+import { loadAgents, type AgentsState } from "./controllers/agents.ts";
+import { loadChannels, type ChannelsState } from "./controllers/channels.ts";
+import { loadConfig, loadConfigSchema, type ConfigState } from "./controllers/config.ts";
+import {
+  loadCronJobsPage,
+  loadCronRuns,
+  loadCronStatus,
+  type CronState,
+} from "./controllers/cron.ts";
+import { loadDebug, type DebugState } from "./controllers/debug.ts";
+import { loadDevices, type DevicesState } from "./controllers/devices.ts";
+import {
+  loadDreamDiary,
+  loadDreamingStatus,
+  loadWikiImportInsights,
+  loadWikiMemoryPalace,
+  type DreamingState,
+} from "./controllers/dreaming.ts";
+import { loadExecApprovals, type ExecApprovalsState } from "./controllers/exec-approvals.ts";
+import { loadLogs, type LogsState } from "./controllers/logs.ts";
+import {
+  loadModelAuthStatusState,
+  type ModelAuthStatusState,
+} from "./controllers/model-auth-status.ts";
+import { loadNodes, type NodesState } from "./controllers/nodes.ts";
+import { loadPresence, type PresenceState } from "./controllers/presence.ts";
+import { loadSessions, type SessionsState } from "./controllers/sessions.ts";
+import { loadSkills, type SkillsState } from "./controllers/skills.ts";
+import { loadUsage, type UsageState } from "./controllers/usage.ts";
+import { syncCustomThemeStyleTag } from "./custom-theme.ts";
+import { isMonitoredAuthProvider } from "./model-auth-helpers.ts";
 import {
   inferBasePathFromPathname,
   normalizeBasePath,
@@ -33,15 +54,25 @@ import {
   tabFromPath,
   type Tab,
 } from "./navigation.ts";
-import { saveSettings, type UiSettings } from "./storage.ts";
+import {
+  saveLocalUserIdentity,
+  saveSettings,
+  type LocalUserIdentity,
+  type UiSettings,
+} from "./storage.ts";
 import { normalizeOptionalString } from "./string-coerce.ts";
 import { startThemeTransition, type ThemeTransitionContext } from "./theme-transition.ts";
 import { resolveTheme, type ResolvedTheme, type ThemeMode, type ThemeName } from "./theme.ts";
 import type { AgentsListResult, AttentionItem } from "./types.ts";
+import { normalizeLocalUserIdentity } from "./user-identity.ts";
 import { resetChatViewState } from "./views/chat.ts";
+
+export { setLastActiveSessionKey } from "./app-last-active-session.ts";
 
 type SettingsHost = {
   settings: UiSettings;
+  userName?: string | null;
+  userAvatar?: string | null;
   password?: string;
   theme: ThemeName;
   themeMode: ThemeMode;
@@ -71,6 +102,36 @@ type SettingsHost = {
   dreamDiaryContent: string | null;
 };
 
+type LocalUserIdentityHost = {
+  userName?: string | null;
+  userAvatar?: string | null;
+};
+
+type SettingsAppHost = SettingsHost &
+  AgentFilesState &
+  AgentIdentityState &
+  AgentSkillsState &
+  AgentsState &
+  ChannelsState &
+  ConfigState &
+  CronState &
+  DebugState &
+  DevicesState &
+  DreamingState &
+  ExecApprovalsState &
+  LogsState &
+  NodesState &
+  PresenceState &
+  SessionsState &
+  SkillsState &
+  ModelAuthStatusState &
+  UsageState & {
+    overviewLogCursor: number | null;
+    overviewLogLines: string[];
+    attentionItems: AttentionItem[];
+    hello: { auth?: { role?: string; scopes?: string[] } } | null;
+  };
+
 export function applySettings(host: SettingsHost, next: UiSettings) {
   const normalized = {
     ...next,
@@ -81,6 +142,7 @@ export function applySettings(host: SettingsHost, next: UiSettings) {
   };
   host.settings = normalized;
   saveSettings(normalized);
+  syncCustomThemeStyleTag(normalized.customTheme);
   if (next.theme !== host.theme || next.themeMode !== host.themeMode) {
     host.theme = next.theme;
     host.themeMode = next.themeMode;
@@ -90,12 +152,18 @@ export function applySettings(host: SettingsHost, next: UiSettings) {
   host.applySessionKey = host.settings.lastActiveSessionKey;
 }
 
-export function setLastActiveSessionKey(host: SettingsHost, next: string) {
-  const trimmed = next.trim();
-  if (!trimmed || host.settings.lastActiveSessionKey === trimmed) {
-    return;
-  }
-  applySettings(host, { ...host.settings, lastActiveSessionKey: trimmed });
+export function applyLocalUserIdentity(
+  host: LocalUserIdentityHost,
+  next: Partial<LocalUserIdentity>,
+) {
+  const normalized = normalizeLocalUserIdentity({
+    name: host.userName,
+    avatar: host.userAvatar,
+    ...next,
+  });
+  host.userName = normalized.name;
+  host.userAvatar = normalized.avatar;
+  saveLocalUserIdentity(normalized);
 }
 
 function applySessionSelection(host: SettingsHost, session: string) {
@@ -231,7 +299,7 @@ export function setThemeMode(
   );
 }
 
-async function refreshAgentsTab(host: SettingsHost, app: OpenClawApp) {
+async function refreshAgentsTab(host: SettingsHost, app: SettingsAppHost) {
   await loadAgents(app);
   await loadConfig(app);
   const agentIds = host.agentsList?.agents?.map((entry) => entry.id) ?? [];
@@ -246,18 +314,26 @@ async function refreshAgentsTab(host: SettingsHost, app: OpenClawApp) {
   void loadAgentIdentity(app, agentId);
   switch (host.agentsPanel) {
     case "files":
-      return void loadAgentFiles(app, agentId);
+      void loadAgentFiles(app, agentId);
+      return;
     case "skills":
-      return void loadAgentSkills(app, agentId);
+      void loadAgentSkills(app, agentId);
+      return;
     case "channels":
-      return void loadChannels(app, false);
+      void loadChannels(app, false);
+      return;
     case "cron":
-      return void loadCron(host);
+      void loadCron(host);
+      return;
+    case "overview":
+    case "tools":
+    case undefined:
+      return;
   }
 }
 
 export async function refreshActiveTab(host: SettingsHost) {
-  const app = host as unknown as OpenClawApp;
+  const app = host as unknown as SettingsAppHost;
   switch (host.tab) {
     case "config":
     case "communications":
@@ -300,7 +376,12 @@ export async function refreshActiveTab(host: SettingsHost) {
       return;
     case "dreams":
       await loadConfig(app);
-      await Promise.all([loadDreamingStatus(app), loadDreamDiary(app)]);
+      await Promise.all([
+        loadDreamingStatus(app),
+        loadDreamDiary(app),
+        loadWikiImportInsights(app),
+        loadWikiMemoryPalace(app),
+      ]);
       return;
     case "chat":
       await refreshChat(host as unknown as Parameters<typeof refreshChat>[0]);
@@ -334,8 +415,17 @@ export function inferBasePath() {
 }
 
 export function syncThemeWithSettings(host: SettingsHost) {
-  host.theme = host.settings.theme ?? "claw";
+  syncCustomThemeStyleTag(host.settings.customTheme);
+  const normalizedTheme =
+    host.settings.theme === "custom" && !host.settings.customTheme
+      ? "claw"
+      : (host.settings.theme ?? "claw");
+  host.theme = normalizedTheme;
   host.themeMode = host.settings.themeMode ?? "system";
+  if (normalizedTheme !== host.settings.theme) {
+    host.settings = { ...host.settings, theme: normalizedTheme };
+    saveSettings(host.settings);
+  }
   applyResolvedTheme(host, resolveTheme(host.theme, host.themeMode));
   applyBorderRadius(host.settings.borderRadius ?? 50);
   syncSystemThemeListener(host);
@@ -509,8 +599,8 @@ export function syncUrlWithSessionKey(host: SettingsHost, sessionKey: string, re
   updateBrowserHistory(url, replace);
 }
 
-export async function loadOverview(host: SettingsHost) {
-  const app = host as unknown as OpenClawApp;
+export async function loadOverview(host: SettingsHost, opts?: { refresh?: boolean }) {
+  const app = host as SettingsAppHost;
   await Promise.allSettled([
     loadChannels(app, false),
     loadPresence(app),
@@ -521,6 +611,9 @@ export async function loadOverview(host: SettingsHost) {
     loadSkills(app),
     loadUsage(app),
     loadOverviewLogs(app),
+    // `refresh: true` bypasses the gateway's 60s auth-status cache so a
+    // user-initiated refresh surfaces post-re-auth state immediately.
+    loadModelAuthStatusState(app, { refresh: opts?.refresh }),
   ]);
   buildAttentionItems(app);
 }
@@ -547,7 +640,7 @@ export function hasMissingSkillDependencies(
   return Object.values(missing).some((value) => Array.isArray(value) && value.length > 0);
 }
 
-async function loadOverviewLogs(host: OpenClawApp) {
+async function loadOverviewLogs(host: SettingsAppHost) {
   if (!host.client || !host.connected) {
     return;
   }
@@ -573,7 +666,7 @@ async function loadOverviewLogs(host: OpenClawApp) {
   }
 }
 
-function buildAttentionItems(host: OpenClawApp) {
+function buildAttentionItems(host: SettingsAppHost) {
   const items: AttentionItem[] = [];
 
   if (host.lastError) {
@@ -646,16 +739,53 @@ function buildAttentionItems(host: OpenClawApp) {
     });
   }
 
+  const modelAuth = host.modelAuthStatusResult;
+  if (modelAuth) {
+    // Use the same predicate as the Overview card so the two stay in sync.
+    // Without this, a `missing` provider shows up on the card but never
+    // produces the re-auth attention callout.
+    const monitored = modelAuth.providers.filter(isMonitoredAuthProvider);
+    const expiredProviders = monitored.filter(
+      (p) => p.status === "expired" || p.status === "missing",
+    );
+    if (expiredProviders.length > 0) {
+      items.push({
+        severity: "error",
+        icon: "key",
+        title: t("overview.cards.modelAuthAttentionExpiredTitle"),
+        description: t("overview.cards.modelAuthAttentionExpiredDesc", {
+          providers: expiredProviders.map((p) => p.displayName).join(", "),
+        }),
+      });
+    }
+    const expiringProviders = monitored.filter((p) => p.status === "expiring");
+    if (expiringProviders.length > 0) {
+      items.push({
+        severity: "warning",
+        icon: "key",
+        title: t("overview.cards.modelAuthAttentionExpiringTitle"),
+        description: expiringProviders
+          .map((p) =>
+            t("overview.cards.modelAuthAttentionExpiringEntry", {
+              provider: p.displayName,
+              when: p.expiry?.label ?? "soon",
+            }),
+          )
+          .join(", "),
+      });
+    }
+  }
+
   host.attentionItems = items;
 }
 
 export async function loadChannelsTab(host: SettingsHost) {
-  const app = host as unknown as OpenClawApp;
+  const app = host as unknown as SettingsAppHost;
   await Promise.all([loadChannels(app, true), loadConfigSchema(app), loadConfig(app)]);
 }
 
 export async function loadCron(host: SettingsHost) {
-  const app = host as unknown as OpenClawApp;
+  const app = host as unknown as SettingsAppHost;
   const activeCronJobId = app.cronRunsScope === "job" ? app.cronRunsJobId : null;
   await Promise.all([
     loadChannels(app, false),

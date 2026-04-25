@@ -1,6 +1,6 @@
 import type { SessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import type { SessionTranscriptUpdate } from "../sessions/transcript-events.js";
-import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast.js";
+import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import type {
   SessionEventSubscriberRegistry,
   SessionMessageSubscriberRegistry,
@@ -72,6 +72,8 @@ function buildGatewaySessionSnapshot(params: {
     modelProvider: sessionRow.modelProvider,
     model: sessionRow.model,
     status: sessionRow.status,
+    subagentRunState: sessionRow.subagentRunState,
+    hasActiveSubagentRun: sessionRow.hasActiveSubagentRun,
     startedAt: sessionRow.startedAt,
     endedAt: sessionRow.endedAt,
     runtimeMs: sessionRow.runtimeMs,

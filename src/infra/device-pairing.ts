@@ -4,7 +4,11 @@ import {
   resolveBootstrapProfileScopesForRole,
   type DeviceBootstrapProfile,
 } from "../shared/device-bootstrap-profile.js";
-import { resolveMissingRequestedScope, roleScopesAllow } from "../shared/operator-scope-compat.js";
+import {
+  resolveMissingRequestedScope,
+  resolveScopeOutsideRequestedRoles,
+  roleScopesAllow,
+} from "../shared/operator-scope-compat.js";
 import {
   createAsyncLock,
   pruneExpiredPending,
@@ -80,14 +84,33 @@ export type PairedDevice = {
   approvedAtMs: number;
 };
 
+export type PairedDeviceMetadataPatch = Pick<
+  PairedDevice,
+  "displayName" | "clientId" | "clientMode" | "remoteIp"
+>;
+
 export type DevicePairingList = {
   pending: DevicePairingPendingRequest[];
   paired: PairedDevice[];
 };
 
+export type DevicePairingForbiddenReason =
+  | "caller-scopes-required"
+  | "caller-missing-scope"
+  | "scope-outside-requested-roles"
+  | "bootstrap-role-not-allowed"
+  | "bootstrap-scope-not-allowed";
+
+export type DevicePairingForbiddenResult = {
+  status: "forbidden";
+  reason: DevicePairingForbiddenReason;
+  scope?: string;
+  role?: string;
+};
+
 export type ApproveDevicePairingResult =
   | { status: "approved"; requestId: string; device: PairedDevice }
-  | { status: "forbidden"; missingScope: string }
+  | DevicePairingForbiddenResult
   | null;
 
 type DevicePairingStateFile = {
@@ -100,6 +123,22 @@ const OPERATOR_ROLE = "operator";
 const OPERATOR_SCOPE_PREFIX = "operator.";
 
 const withLock = createAsyncLock();
+
+export function formatDevicePairingForbiddenMessage(result: DevicePairingForbiddenResult): string {
+  switch (result.reason) {
+    case "caller-scopes-required":
+      return `missing scope: ${result.scope ?? "callerScopes-required"}`;
+    case "caller-missing-scope":
+      return `missing scope: ${result.scope ?? "unknown"}`;
+    case "scope-outside-requested-roles":
+      return `invalid scope for requested roles: ${result.scope ?? "unknown"}`;
+    case "bootstrap-role-not-allowed":
+      return `bootstrap profile does not allow role: ${result.role ?? "unknown"}`;
+    case "bootstrap-scope-not-allowed":
+      return `bootstrap profile does not allow scope: ${result.scope ?? "unknown"}`;
+  }
+  throw new Error("Unsupported device pairing forbidden reason");
+}
 
 async function loadState(baseDir?: string): Promise<DevicePairingStateFile> {
   const { pendingPath, pairedPath } = resolvePairingPaths(baseDir, "devices");
@@ -115,8 +154,22 @@ async function loadState(baseDir?: string): Promise<DevicePairingStateFile> {
   return state;
 }
 
-async function persistState(state: DevicePairingStateFile, baseDir?: string) {
+type DevicePairingPersistTarget = "pending" | "paired" | "both";
+
+async function persistState(
+  state: DevicePairingStateFile,
+  baseDir: string | undefined,
+  target: DevicePairingPersistTarget,
+) {
   const { pendingPath, pairedPath } = resolvePairingPaths(baseDir, "devices");
+  if (target === "pending") {
+    await writeJsonAtomic(pendingPath, state.pendingById);
+    return;
+  }
+  if (target === "paired") {
+    await writeJsonAtomic(pairedPath, state.pairedByDeviceId);
+    return;
+  }
   await Promise.all([
     writeJsonAtomic(pendingPath, state.pendingById),
     writeJsonAtomic(pairedPath, state.pairedByDeviceId),
@@ -283,7 +336,10 @@ function refreshPendingDevicePairingRequest(
     // If either request is interactive, keep the pending request visible for approval.
     silent: Boolean(existing.silent && incoming.silent),
     isRepair: existing.isRepair || isRepair,
-    ts: Date.now(),
+    // Preserve the original creation timestamp so that reconnects cannot bump this
+    // request's queue position. Using Date.now() here would let an attacker silently
+    // refresh recency and win the implicit --latest approval race.
+    ts: existing.ts,
   };
 }
 
@@ -406,25 +462,6 @@ function scopesWithinApprovedDeviceBaseline(params: {
   });
 }
 
-function resolveScopeOutsideRequestedRoles(params: {
-  requestedRoles: readonly string[];
-  requestedScopes: readonly string[];
-}): string | null {
-  for (const scope of params.requestedScopes) {
-    const matchesRequestedRole = params.requestedRoles.some((role) =>
-      roleScopesAllow({
-        role,
-        requestedScopes: [scope],
-        allowedScopes: [scope],
-      }),
-    );
-    if (!matchesRequestedRole) {
-      return scope;
-    }
-  }
-  return null;
-}
-
 export async function listDevicePairing(baseDir?: string): Promise<DevicePairingList> {
   const state = await loadState(baseDir);
   const pending = Object.values(state.pendingById).toSorted((a, b) => b.ts - a.ts);
@@ -503,7 +540,7 @@ export async function requestDevicePairing(
           },
         });
       },
-      persist: async () => await persistState(state, baseDir),
+      persist: async () => await persistState(state, baseDir, "pending"),
     });
   });
 }
@@ -540,7 +577,11 @@ export async function approveDevicePairing(
       requestedScopes,
     });
     if (roleMismatchScope) {
-      return { status: "forbidden", missingScope: roleMismatchScope };
+      return {
+        status: "forbidden",
+        reason: "scope-outside-requested-roles",
+        scope: roleMismatchScope,
+      };
     }
     const requestedOperatorScopes = requestedScopes.filter((scope) =>
       scope.startsWith(OPERATOR_SCOPE_PREFIX),
@@ -549,11 +590,9 @@ export async function approveDevicePairing(
       if (!options?.callerScopes) {
         return {
           status: "forbidden",
-          missingScope: requestedOperatorScopes[0] ?? "callerScopes-required",
+          reason: "caller-scopes-required",
+          scope: requestedOperatorScopes[0],
         };
-      }
-      if (!requestedRoles.includes(OPERATOR_ROLE)) {
-        return { status: "forbidden", missingScope: requestedOperatorScopes[0] };
       }
       const missingScope = resolveMissingRequestedScope({
         role: OPERATOR_ROLE,
@@ -561,7 +600,7 @@ export async function approveDevicePairing(
         allowedScopes: options.callerScopes,
       });
       if (missingScope) {
-        return { status: "forbidden", missingScope };
+        return { status: "forbidden", reason: "caller-missing-scope", scope: missingScope };
       }
     }
     const now = Date.now();
@@ -611,7 +650,7 @@ export async function approveDevicePairing(
     };
     delete state.pendingById[requestId];
     state.pairedByDeviceId[device.deviceId] = device;
-    await persistState(state, baseDir);
+    await persistState(state, baseDir, "both");
     return { status: "approved", requestId, device };
   });
 }
@@ -635,7 +674,7 @@ export async function approveBootstrapDevicePairing(
     const requestedRoles = resolveRequestedRoles(pending);
     const missingRole = requestedRoles.find((role) => !approvedRoles.includes(role));
     if (missingRole) {
-      return { status: "forbidden", missingScope: missingRole };
+      return { status: "forbidden", reason: "bootstrap-role-not-allowed", role: missingRole };
     }
     const requestedOperatorScopes = normalizeDeviceAuthScopes(pending.scopes).filter((scope) =>
       scope.startsWith(OPERATOR_SCOPE_PREFIX),
@@ -646,7 +685,7 @@ export async function approveBootstrapDevicePairing(
       allowedScopes: approvedScopes,
     });
     if (missingScope) {
-      return { status: "forbidden", missingScope };
+      return { status: "forbidden", reason: "bootstrap-scope-not-allowed", scope: missingScope };
     }
 
     const now = Date.now();
@@ -698,7 +737,7 @@ export async function approveBootstrapDevicePairing(
     };
     delete state.pendingById[requestId];
     state.pairedByDeviceId[device.deviceId] = device;
-    await persistState(state, baseDir);
+    await persistState(state, baseDir, "both");
     return { status: "approved", requestId, device };
   });
 }
@@ -716,7 +755,7 @@ export async function rejectDevicePairing(
       requestId,
       idKey: "deviceId",
       loadState: () => loadState(baseDir),
-      persistState: (state) => persistState(state, baseDir),
+      persistState: (state) => persistState(state, baseDir, "pending"),
       getId: (pending: DevicePairingPendingRequest) => pending.deviceId,
     });
   });
@@ -733,38 +772,43 @@ export async function removePairedDevice(
       return null;
     }
     delete state.pairedByDeviceId[normalized];
-    await persistState(state, baseDir);
+    for (const [requestId, pending] of Object.entries(state.pendingById)) {
+      if (pending.deviceId === normalized) {
+        delete state.pendingById[requestId];
+      }
+    }
+    await persistState(state, baseDir, "both");
     return { deviceId: normalized };
   });
 }
 
 export async function updatePairedDeviceMetadata(
   deviceId: string,
-  patch: Partial<
-    Omit<PairedDevice, "deviceId" | "createdAtMs" | "approvedAtMs" | "approvedScopes">
-  >,
+  patch: Partial<PairedDeviceMetadataPatch>,
   baseDir?: string,
 ): Promise<void> {
   return await withLock(async () => {
     const state = await loadState(baseDir);
-    const existing = state.pairedByDeviceId[normalizeDeviceId(deviceId)];
+    const normalizedDeviceId = normalizeDeviceId(deviceId);
+    const existing = state.pairedByDeviceId[normalizedDeviceId];
     if (!existing) {
       return;
     }
-    const roles = mergeRoles(existing.roles, existing.role, patch.role);
-    const scopes = mergeScopes(existing.scopes, patch.scopes);
-    state.pairedByDeviceId[deviceId] = {
-      ...existing,
-      ...patch,
-      deviceId: existing.deviceId,
-      createdAtMs: existing.createdAtMs,
-      approvedAtMs: existing.approvedAtMs,
-      approvedScopes: existing.approvedScopes,
-      role: patch.role ?? existing.role,
-      roles,
-      scopes,
-    };
-    await persistState(state, baseDir);
+    const next = { ...existing };
+    if ("displayName" in patch) {
+      next.displayName = patch.displayName;
+    }
+    if ("clientId" in patch) {
+      next.clientId = patch.clientId;
+    }
+    if ("clientMode" in patch) {
+      next.clientMode = patch.clientMode;
+    }
+    if ("remoteIp" in patch) {
+      next.remoteIp = patch.remoteIp;
+    }
+    state.pairedByDeviceId[normalizedDeviceId] = next;
+    await persistState(state, baseDir, "paired");
   });
 }
 
@@ -832,7 +876,7 @@ export async function verifyDeviceToken(params: {
     device.tokens ??= {};
     device.tokens[role] = entry;
     state.pairedByDeviceId[device.deviceId] = device;
-    await persistState(state, params.baseDir);
+    await persistState(state, params.baseDir, "paired");
     return { ok: true };
   });
 }
@@ -889,7 +933,7 @@ export async function ensureDeviceToken(params: {
     tokens[role] = next;
     device.tokens = tokens;
     state.pairedByDeviceId[device.deviceId] = device;
-    await persistState(state, params.baseDir);
+    await persistState(state, params.baseDir, "paired");
     return next;
   });
 }
@@ -966,7 +1010,7 @@ export async function rotateDeviceToken(params: {
     tokens[role] = next;
     device.tokens = tokens;
     state.pairedByDeviceId[device.deviceId] = device;
-    await persistState(state, params.baseDir);
+    await persistState(state, params.baseDir, "paired");
     return { ok: true, entry: next };
   });
 }
@@ -994,7 +1038,7 @@ export async function revokeDeviceToken(params: {
     tokens[role] = entry;
     device.tokens = tokens;
     state.pairedByDeviceId[device.deviceId] = device;
-    await persistState(state, params.baseDir);
+    await persistState(state, params.baseDir, "paired");
     return entry;
   });
 }
@@ -1007,7 +1051,7 @@ export async function clearDevicePairing(deviceId: string, baseDir?: string): Pr
       return false;
     }
     delete state.pairedByDeviceId[normalizedId];
-    await persistState(state, baseDir);
+    await persistState(state, baseDir, "paired");
     return true;
   });
 }

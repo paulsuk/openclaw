@@ -7,6 +7,7 @@ import { getAcpRuntimeBackend } from "../acp/runtime/registry.js";
 import { readAcpSessionEntry, upsertAcpSessionMeta } from "../acp/runtime/session-meta.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { clearBootstrapSnapshot } from "../agents/bootstrap-cache.js";
+import { retireSessionMcpRuntime } from "../agents/pi-bundle-mcp-tools.js";
 import { abortEmbeddedPiRun, waitForEmbeddedPiRunEnd } from "../agents/pi-embedded.js";
 import { stopSubagentsForRequester } from "../auto-reply/reply/abort.js";
 import { clearSessionQueues } from "../auto-reply/reply/queue.js";
@@ -21,7 +22,9 @@ import {
   updateSessionStore,
 } from "../config/sessions.js";
 import { resolveSessionFilePath, resolveSessionFilePathOptions } from "../config/sessions/paths.js";
+import { resolveResetPreservedSelection } from "../config/sessions/reset-preserved-selection.js";
 import type { SessionAcpMeta } from "../config/sessions/types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { logVerbose } from "../globals.js";
 import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
 import { getSessionBindingService } from "../infra/outbound/session-binding-service.js";
@@ -61,48 +64,6 @@ function stripRuntimeModelState(entry?: SessionEntry): SessionEntry | undefined 
   };
 }
 
-type ResetPreservedSelectionState = Pick<
-  SessionEntry,
-  | "providerOverride"
-  | "modelOverride"
-  | "modelOverrideSource"
-  | "authProfileOverride"
-  | "authProfileOverrideSource"
-  | "authProfileOverrideCompactionCount"
->;
-
-function resolveResetPreservedSelection(params: {
-  entry?: SessionEntry;
-}): Partial<ResetPreservedSelectionState> {
-  const { entry } = params;
-  if (!entry) {
-    return {};
-  }
-
-  const preserved: Partial<ResetPreservedSelectionState> = {};
-  // `modelOverrideSource` is new. Older persisted sessions can still carry
-  // user-selected overrides without the source field, so treat an absent
-  // source as legacy user state during reset and backfill it forward.
-  const preserveLegacyUserModelOverride =
-    entry.modelOverrideSource === "user" ||
-    (entry.modelOverrideSource === undefined && Boolean(entry.modelOverride));
-  if (preserveLegacyUserModelOverride && entry.modelOverride) {
-    preserved.providerOverride = entry.providerOverride;
-    preserved.modelOverride = entry.modelOverride;
-    preserved.modelOverrideSource = "user";
-  }
-
-  if (entry.authProfileOverrideSource === "user" && entry.authProfileOverride) {
-    preserved.authProfileOverride = entry.authProfileOverride;
-    preserved.authProfileOverrideSource = entry.authProfileOverrideSource;
-    if (entry.authProfileOverrideCompactionCount !== undefined) {
-      preserved.authProfileOverrideCompactionCount = entry.authProfileOverrideCompactionCount;
-    }
-  }
-
-  return preserved;
-}
-
 export function archiveSessionTranscriptsForSession(params: {
   sessionId: string | undefined;
   storePath: string;
@@ -133,7 +94,7 @@ export function archiveSessionTranscriptsForSessionDetailed(params: {
 }
 
 export function emitGatewaySessionEndPluginHook(params: {
-  cfg: ReturnType<typeof loadConfig>;
+  cfg: OpenClawConfig;
   sessionKey: string;
   sessionId?: string;
   storePath: string;
@@ -174,7 +135,7 @@ export function emitGatewaySessionEndPluginHook(params: {
 }
 
 export function emitGatewaySessionStartPluginHook(params: {
-  cfg: ReturnType<typeof loadConfig>;
+  cfg: OpenClawConfig;
   sessionKey: string;
   sessionId?: string;
   resumedFrom?: string;
@@ -231,7 +192,7 @@ export async function emitSessionUnboundLifecycleEvent(params: {
 }
 
 async function ensureSessionRuntimeCleanup(params: {
-  cfg: ReturnType<typeof loadConfig>;
+  cfg: OpenClawConfig;
   key: string;
   target: ReturnType<typeof resolveGatewaySessionStoreTarget>;
   sessionId?: string;
@@ -265,6 +226,15 @@ async function ensureSessionRuntimeCleanup(params: {
   const ended = await waitForEmbeddedPiRunEnd(params.sessionId, 15_000);
   clearBootstrapSnapshot(params.target.canonicalKey);
   if (ended) {
+    await retireSessionMcpRuntime({
+      sessionId: params.sessionId,
+      reason: "gateway-session-cleanup",
+      onError: (error, sessionId) => {
+        logVerbose(
+          `sessions cleanup: failed to dispose bundle MCP runtime for ${sessionId}: ${String(error)}`,
+        );
+      },
+    });
     await closeTrackedBrowserTabs();
     return undefined;
   }
@@ -293,7 +263,7 @@ async function runAcpCleanupStep(params: {
 }
 
 async function closeAcpRuntimeForSession(params: {
-  cfg: ReturnType<typeof loadConfig>;
+  cfg: OpenClawConfig;
   sessionKey: string;
   entry?: SessionEntry;
   reason: "session-reset" | "session-delete";
@@ -379,7 +349,7 @@ function buildPendingAcpMeta(base: SessionAcpMeta, now: number): SessionAcpMeta 
 }
 
 async function ensureFreshAcpResetState(params: {
-  cfg: ReturnType<typeof loadConfig>;
+  cfg: OpenClawConfig;
   sessionKey: string;
   reason: "session-reset" | "session-delete";
   entry?: SessionEntry;
@@ -425,7 +395,7 @@ async function ensureFreshAcpResetState(params: {
 }
 
 export async function cleanupSessionBeforeMutation(params: {
-  cfg: ReturnType<typeof loadConfig>;
+  cfg: OpenClawConfig;
   key: string;
   target: ReturnType<typeof resolveGatewaySessionStoreTarget>;
   entry: SessionEntry | undefined;
@@ -451,7 +421,7 @@ export async function cleanupSessionBeforeMutation(params: {
 }
 
 function emitGatewayBeforeResetPluginHook(params: {
-  cfg: ReturnType<typeof loadConfig>;
+  cfg: OpenClawConfig;
   key: string;
   target: ReturnType<typeof resolveGatewaySessionStoreTarget>;
   storePath: string;
@@ -513,6 +483,8 @@ export async function performGatewaySessionReset(params: {
   })();
   const { entry, legacyKey, canonicalKey } = loadSessionEntry(params.key);
   const hadExistingEntry = Boolean(entry);
+  const agentId = normalizeAgentId(target.agentId ?? resolveDefaultAgentId(cfg));
+  const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
   const hookEvent = createInternalHookEvent(
     "command",
     params.reason,
@@ -522,6 +494,7 @@ export async function performGatewaySessionReset(params: {
       previousSessionEntry: entry,
       commandSource: params.commandSource,
       cfg,
+      workspaceDir,
     },
   );
   await triggerInternalHook(hookEvent);
@@ -586,6 +559,7 @@ export async function performGatewaySessionReset(params: {
       thinkingLevel: currentEntry?.thinkingLevel,
       fastMode: currentEntry?.fastMode,
       verboseLevel: currentEntry?.verboseLevel,
+      traceLevel: currentEntry?.traceLevel,
       reasoningLevel: currentEntry?.reasoningLevel,
       elevatedLevel: currentEntry?.elevatedLevel,
       ttsAuto: currentEntry?.ttsAuto,

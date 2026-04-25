@@ -1,9 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { loadBundledProviderPlugin as loadBundledProviderPluginFromTestHelper } from "./helpers/media-generation/bundled-provider-builders.js";
-import {
-  registerProviderPlugin,
-  requireRegisteredProvider,
-} from "./helpers/plugins/provider-registration.js";
 import { resolveOpenClawAgentDir } from "../src/agents/agent-paths.js";
 import { collectProviderApiKeys } from "../src/agents/live-auth-keys.js";
 import { isLiveProfileKeyModeEnabled, isLiveTestEnabled } from "../src/agents/live-test-helpers.js";
@@ -19,9 +14,14 @@ import {
   resolveLiveImageAuthStore,
 } from "../src/image-generation/live-test-helpers.js";
 import { isTruthyEnvValue } from "../src/infra/env.js";
-import { getShellEnvAppliedKeys, loadShellEnvFallback } from "../src/infra/shell-env.js";
+import { getShellEnvAppliedKeys } from "../src/infra/shell-env.js";
 import { encodePngRgba, fillPixel } from "../src/media/png-encode.js";
-import { getProviderEnvVars } from "../src/secrets/provider-env-vars.js";
+import { maybeLoadShellEnvForGenerationProviders } from "../src/test-utils/generation-live-test-helpers.js";
+import { loadBundledProviderPlugin as loadBundledProviderPluginFromTestHelper } from "./helpers/media-generation/bundled-provider-builders.js";
+import {
+  registerProviderPlugin,
+  requireRegisteredProvider,
+} from "./helpers/plugins/provider-registration.js";
 
 const LIVE = isLiveTestEnabled();
 const REQUIRE_PROFILE_KEYS =
@@ -75,9 +75,19 @@ const PROVIDER_CASES: LiveProviderCase[] = [
     providerId: "openai",
   },
   {
+    pluginId: "openrouter",
+    pluginName: "OpenRouter Provider",
+    providerId: "openrouter",
+  },
+  {
     pluginId: "vydra",
     pluginName: "Vydra Provider",
     providerId: "vydra",
+  },
+  {
+    pluginId: "xai",
+    pluginName: "xAI Provider",
+    providerId: "xai",
   },
 ]
   .filter((entry) => (providerFilter ? providerFilter.has(entry.providerId) : true))
@@ -117,21 +127,6 @@ function withPluginsEnabled(cfg: OpenClawConfig): OpenClawConfig {
       enabled: true,
     },
   };
-}
-
-function maybeLoadShellEnvForImageProviders(providerIds: string[]): void {
-  const expectedKeys = [
-    ...new Set(providerIds.flatMap((providerId) => getProviderEnvVars(providerId))),
-  ];
-  if (expectedKeys.length === 0) {
-    return;
-  }
-  loadShellEnvFallback({
-    enabled: true,
-    env: process.env,
-    expectedKeys,
-    logger: { warn: (message: string) => console.warn(message) },
-  });
 }
 
 function resolveProviderModelForLiveTest(providerId: string, modelRef: string): string {
@@ -190,7 +185,7 @@ describeLive("image generation live (provider sweep)", () => {
       const skipped: string[] = [];
       const failures: string[] = [];
 
-      maybeLoadShellEnvForImageProviders(PROVIDER_CASES.map((entry) => entry.providerId));
+      maybeLoadShellEnvForGenerationProviders(PROVIDER_CASES.map((entry) => entry.providerId));
 
       for (const providerCase of PROVIDER_CASES) {
         const modelRef =

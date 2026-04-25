@@ -68,6 +68,7 @@ export type AgentApprovalEventData = {
   command?: string;
   host?: string;
   reason?: string;
+  scope?: "turn" | "session";
   message?: string;
 };
 
@@ -165,8 +166,9 @@ export function getAgentRunContext(runId: string) {
 }
 
 export function clearAgentRunContext(runId: string) {
-  getAgentEventState().runContextById.delete(runId);
-  getAgentEventState().seqByRun.delete(runId);
+  const state = getAgentEventState();
+  state.runContextById.delete(runId);
+  state.seqByRun.delete(runId);
 }
 
 /**
